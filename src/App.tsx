@@ -104,15 +104,16 @@ export default function App() {
     { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
   ];
 
-  // Reset LocalStorage helper for testing
-  const handleResetData = () => {
-    if (confirm("Are you sure you want to reset all data back to the default mock set? This will delete all custom assignments, leaves, and attendance.")) {
-      localStorage.removeItem('v2_employee_profiles');
-      localStorage.removeItem('v2_projects_list');
-      localStorage.removeItem('v2_assignments_list');
-      localStorage.removeItem('v2_attendance');
-      localStorage.removeItem('v2_manual_leaves');
-      window.location.reload();
+  // Reset database helper for testing
+  const handleResetData = async () => {
+    if (confirm("Are you sure you want to delete all data in Firestore? This will permanently delete all custom employees, projects, assignments, leaves, and attendance.")) {
+      try {
+        await state.resetDatabase();
+        alert("Firestore database successfully cleared!");
+      } catch (err) {
+        console.error("Failed to clear Firestore database:", err);
+        alert("Error: Failed to clear Firestore database.");
+      }
     }
   };
 

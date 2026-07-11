@@ -327,42 +327,34 @@ export default function MasterSheetView({
       if (activeSubTab === 'employees') {
         const imported = await importEmployeesFromExcel(file);
         if (confirm(`Do you want to import ${imported.length} Employee Profiles directly into the Employees Database?`)) {
-          const newProfiles = [...profiles];
           let added = 0;
-          imported.forEach(emp => {
-            if (!newProfiles.some(p => p.id === emp.id)) {
-              newProfiles.push(emp);
+          for (const emp of imported) {
+            if (!profiles.some(p => p.id === emp.id)) {
+              addProfile(emp);
               added++;
             }
-          });
-          localStorage.setItem('v2_employee_profiles', JSON.stringify(newProfiles));
+          }
           alert(`Successfully imported ${added} new employee profiles!`);
-          window.location.reload();
         }
       } else if (activeSubTab === 'projects') {
         const imported = await importProjectsFromExcel(file);
         if (confirm(`Do you want to import ${imported.length} Projects directly into the Projects Database?`)) {
-          const newProjects = [...projects];
           let added = 0;
-          imported.forEach(proj => {
-            if (!newProjects.some(p => p.name.toLowerCase() === proj.name.toLowerCase())) {
-              newProjects.push(proj);
+          for (const proj of imported) {
+            if (!projects.some(p => p.name.toLowerCase() === proj.name.toLowerCase())) {
+              addProject(proj);
               added++;
             }
-          });
-          localStorage.setItem('v2_projects_list', JSON.stringify(newProjects));
+          }
           alert(`Successfully imported ${added} new projects!`);
-          window.location.reload();
         }
       } else {
         // Assignments Tab Import
         const imported = await importFromExcel(file);
         if (confirm(`Do you want to import and normalize ${imported.length} rows of assignments?`)) {
-          const newProfiles: EmployeeProfile[] = [...profiles];
-          const newProjects: ProjectDetails[] = [...projects];
           const newAssignments: ProjectAssignment[] = [];
-
           let overlapError = "";
+
           for (let i = 0; i < imported.length; i++) {
             const emp = imported[i];
             const start = emp.travelStartDate || emp.projectStartDate;
@@ -388,15 +380,6 @@ export default function MasterSheetView({
               break;
             }
 
-            // 1. Profile mapping
-            if (!newProfiles.some(p => p.id === emp.id)) {
-              newProfiles.push({ id: emp.id, name: emp.name, department: emp.department, function: emp.function });
-            }
-            // 2. Project mapping
-            if (!newProjects.some(p => p.name.toLowerCase() === emp.project.toLowerCase())) {
-              newProjects.push({ name: emp.project, budgetCode: emp.budgetCode, startDate: emp.projectStartDate, endDate: emp.projectEndDate });
-            }
-            // 3. Assignment mapping
             newAssignments.push({
               employeeId: emp.id,
               projectName: emp.project,
@@ -412,11 +395,33 @@ export default function MasterSheetView({
             return;
           }
 
-          // Bulk load
-          localStorage.setItem('v2_employee_profiles', JSON.stringify(newProfiles));
-          localStorage.setItem('v2_projects_list', JSON.stringify(newProjects));
-          localStorage.setItem('v2_assignments_list', JSON.stringify(newAssignments));
-          window.location.reload();
+          // Import into Firestore
+          let addedAss = 0;
+          for (let i = 0; i < imported.length; i++) {
+            const emp = imported[i];
+            const start = emp.travelStartDate || emp.projectStartDate;
+            const end = emp.travelEndDate || emp.projectEndDate;
+
+            // 1. Profile mapping
+            if (!profiles.some(p => p.id === emp.id)) {
+              addProfile({ id: emp.id, name: emp.name, department: emp.department, function: emp.function });
+            }
+            // 2. Project mapping
+            if (!projects.some(p => p.name.toLowerCase() === emp.project.toLowerCase())) {
+              addProject({ name: emp.project, budgetCode: emp.budgetCode, startDate: emp.projectStartDate, endDate: emp.projectEndDate });
+            }
+            // 3. Assignment mapping
+            addAssignment({
+              employeeId: emp.id,
+              projectName: emp.project,
+              travelStartDate: start,
+              travelEndDate: end,
+              status: emp.status,
+              remarks: emp.remarks
+            });
+            addedAss++;
+          }
+          alert(`Successfully imported ${addedAss} assignments (and associated staff/projects)!`);
         }
       }
     } catch (err: any) {

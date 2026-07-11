@@ -57,28 +57,6 @@ export interface ManualLeave {
   date: string; // YYYY-MM-DD
 }
 
-const INITIAL_PROFILES: EmployeeProfile[] = [
-  { id: "EMP001", name: "Mohd Asif", department: "Engineering", function: "Lead Architect" },
-  { id: "EMP002", name: "Jane Doe", department: "Engineering", function: "Senior Developer" },
-  { id: "EMP003", name: "Alice Smith", department: "Operations", function: "Project Manager" },
-  { id: "EMP004", name: "Bob Johnson", department: "Engineering", function: "DevOps Engineer" },
-  { id: "EMP005", name: "Charlie Brown", department: "Design", function: "UI/UX Designer" }
-];
-
-const INITIAL_PROJECTS: ProjectDetails[] = [
-  { name: "Project Apollo", budgetCode: "BC-2026-ENG-01", startDate: "2026-05-01", endDate: "2026-06-30" },
-  { name: "Project Titan", budgetCode: "BC-2026-OPS-03", startDate: "2026-05-15", endDate: "2026-08-15" },
-  { name: "Project Genesis", budgetCode: "BC-2026-ENG-02", startDate: "2026-06-01", endDate: "2026-07-31" }
-];
-
-const INITIAL_ASSIGNMENTS: ProjectAssignment[] = [
-  { employeeId: "EMP001", projectName: "Project Apollo", travelStartDate: "2026-05-01", travelEndDate: "2026-06-30", status: "Working", remarks: "Lead frontend architect" },
-  { employeeId: "EMP002", projectName: "Project Apollo", travelStartDate: "2026-05-01", travelEndDate: "2026-06-30", status: "Working", remarks: "Database engineering" },
-  { employeeId: "EMP003", projectName: "Project Titan", travelStartDate: "2026-05-15", travelEndDate: "2026-08-15", status: "Working", remarks: "Project management" },
-  { employeeId: "EMP004", projectName: "Project Genesis", travelStartDate: "2026-06-01", travelEndDate: "2026-07-31", status: "Working", remarks: "Cloud deployment" },
-  { employeeId: "EMP005", projectName: "Project Titan", travelStartDate: "2026-05-20", travelEndDate: "2026-07-20", status: "Travelling", remarks: "Design iterations" },
-  { employeeId: "EMP001", projectName: "Project Titan", travelStartDate: "2026-07-01", travelEndDate: "2026-08-31", status: "Working", remarks: "Integration lead" }
-];
 
 export function usePlanningState() {
   const [profiles, setProfiles] = useState<EmployeeProfile[]>([]);
@@ -87,60 +65,33 @@ export function usePlanningState() {
   const [attendance, setAttendance] = useState<AttendanceRecord>({});
   const [manualLeaves, setManualLeaves] = useState<ManualLeave[]>([]);
 
-  // Subscriptions to Firestore Collections with auto-seeding if empty
+  // Subscriptions to Firestore Collections
   useEffect(() => {
-    const unsubscribeProfiles = onSnapshot(collection(db, 'profiles'), async (snapshot) => {
+    const unsubscribeProfiles = onSnapshot(collection(db, 'staff_profiles'), (snapshot) => {
       const list: EmployeeProfile[] = [];
       snapshot.forEach((doc) => {
         list.push({ id: doc.id, ...doc.data() } as EmployeeProfile);
       });
-      if (snapshot.empty) {
-        for (const p of INITIAL_PROFILES) {
-          await setDoc(doc(db, 'profiles', p.id), {
-            name: p.name,
-            department: p.department,
-            function: p.function
-          });
-        }
-      } else {
-        setProfiles(list);
-      }
+      setProfiles(list);
     });
 
-    const unsubscribeProjects = onSnapshot(collection(db, 'projects'), async (snapshot) => {
+    const unsubscribeProjects = onSnapshot(collection(db, 'staff_projects'), (snapshot) => {
       const list: ProjectDetails[] = [];
       snapshot.forEach((doc) => {
         list.push({ name: doc.id, ...doc.data() } as ProjectDetails);
       });
-      if (snapshot.empty) {
-        for (const p of INITIAL_PROJECTS) {
-          await setDoc(doc(db, 'projects', p.name), {
-            budgetCode: p.budgetCode,
-            startDate: p.startDate,
-            endDate: p.endDate
-          });
-        }
-      } else {
-        setProjects(list);
-      }
+      setProjects(list);
     });
 
-    const unsubscribeAssignments = onSnapshot(collection(db, 'assignments'), async (snapshot) => {
+    const unsubscribeAssignments = onSnapshot(collection(db, 'staff_assignments'), (snapshot) => {
       const list: ProjectAssignment[] = [];
       snapshot.forEach((doc) => {
         list.push({ id: doc.id, ...doc.data() } as any);
       });
-      if (snapshot.empty) {
-        for (const a of INITIAL_ASSIGNMENTS) {
-          const docRef = doc(collection(db, 'assignments'));
-          await setDoc(docRef, a);
-        }
-      } else {
-        setAssignments(list);
-      }
+      setAssignments(list);
     });
 
-    const unsubscribeAttendance = onSnapshot(collection(db, 'attendance'), (snapshot) => {
+    const unsubscribeAttendance = onSnapshot(collection(db, 'staff_attendance'), (snapshot) => {
       const record: AttendanceRecord = {};
       snapshot.forEach((doc) => {
         record[doc.id] = doc.data().status;
@@ -148,7 +99,7 @@ export function usePlanningState() {
       setAttendance(record);
     });
 
-    const unsubscribeLeaves = onSnapshot(collection(db, 'manualLeaves'), (snapshot) => {
+    const unsubscribeLeaves = onSnapshot(collection(db, 'staff_manual_leaves'), (snapshot) => {
       const list: ManualLeave[] = [];
       snapshot.forEach((doc) => {
         list.push(doc.data() as ManualLeave);
@@ -171,7 +122,7 @@ export function usePlanningState() {
       alert(`Error: Employee ID '${p.id}' already exists.`);
       return false;
     }
-    setDoc(doc(db, 'profiles', p.id), {
+    setDoc(doc(db, 'staff_profiles', p.id), {
       name: p.name,
       department: p.department,
       function: p.function
@@ -180,7 +131,7 @@ export function usePlanningState() {
   };
 
   const editProfile = async (_index: number, updated: EmployeeProfile) => {
-    await setDoc(doc(db, 'profiles', updated.id), {
+    await setDoc(doc(db, 'staff_profiles', updated.id), {
       name: updated.name,
       department: updated.department,
       function: updated.function
@@ -192,13 +143,13 @@ export function usePlanningState() {
     const batch = writeBatch(db);
     
     // Delete profile doc
-    batch.delete(doc(db, 'profiles', profile.id));
+    batch.delete(doc(db, 'staff_profiles', profile.id));
     
     // Cascade delete assignments
     const relatedAssignments = assignments.filter(a => a.employeeId === profile.id);
     relatedAssignments.forEach(a => {
       if ((a as any).id) {
-        batch.delete(doc(db, 'assignments', (a as any).id));
+        batch.delete(doc(db, 'staff_assignments', (a as any).id));
       }
     });
 
@@ -211,7 +162,7 @@ export function usePlanningState() {
       alert(`Error: Project named '${p.name}' already exists.`);
       return false;
     }
-    setDoc(doc(db, 'projects', p.name), {
+    setDoc(doc(db, 'staff_projects', p.name), {
       budgetCode: p.budgetCode,
       startDate: p.startDate,
       endDate: p.endDate
@@ -225,8 +176,8 @@ export function usePlanningState() {
 
     if (oldProj.name !== updated.name) {
       // Name changed: delete old doc and create new one
-      batch.delete(doc(db, 'projects', oldProj.name));
-      batch.set(doc(db, 'projects', updated.name), {
+      batch.delete(doc(db, 'staff_projects', oldProj.name));
+      batch.set(doc(db, 'staff_projects', updated.name), {
         budgetCode: updated.budgetCode,
         startDate: updated.startDate,
         endDate: updated.endDate
@@ -236,11 +187,11 @@ export function usePlanningState() {
       const relatedAssignments = assignments.filter(a => a.projectName === oldProj.name);
       relatedAssignments.forEach(a => {
         if ((a as any).id) {
-          batch.update(doc(db, 'assignments', (a as any).id), { projectName: updated.name });
+          batch.update(doc(db, 'staff_assignments', (a as any).id), { projectName: updated.name });
         }
       });
     } else {
-      batch.set(doc(db, 'projects', updated.name), {
+      batch.set(doc(db, 'staff_projects', updated.name), {
         budgetCode: updated.budgetCode,
         startDate: updated.startDate,
         endDate: updated.endDate
@@ -255,13 +206,13 @@ export function usePlanningState() {
     const batch = writeBatch(db);
 
     // Delete project doc
-    batch.delete(doc(db, 'projects', proj.name));
+    batch.delete(doc(db, 'staff_projects', proj.name));
 
     // Cascade delete assignments
     const relatedAssignments = assignments.filter(a => a.projectName === proj.name);
     relatedAssignments.forEach(a => {
       if ((a as any).id) {
-        batch.delete(doc(db, 'assignments', (a as any).id));
+        batch.delete(doc(db, 'staff_assignments', (a as any).id));
       }
     });
 
@@ -270,7 +221,7 @@ export function usePlanningState() {
 
   // Assignments CRUD
   const addAssignment = async (a: ProjectAssignment) => {
-    const docRef = doc(collection(db, 'assignments'));
+    const docRef = doc(collection(db, 'staff_assignments'));
     await setDoc(docRef, a);
   };
 
@@ -278,7 +229,7 @@ export function usePlanningState() {
     const oldAssignment = assignments[index];
     if (oldAssignment && (oldAssignment as any).id) {
       const docId = (oldAssignment as any).id;
-      await setDoc(doc(db, 'assignments', docId), updated);
+      await setDoc(doc(db, 'staff_assignments', docId), updated);
     }
   };
 
@@ -286,7 +237,7 @@ export function usePlanningState() {
     const oldAssignment = assignments[index];
     if (oldAssignment && (oldAssignment as any).id) {
       const docId = (oldAssignment as any).id;
-      await deleteDoc(doc(db, 'assignments', docId));
+      await deleteDoc(doc(db, 'staff_assignments', docId));
     }
   };
 
@@ -296,13 +247,13 @@ export function usePlanningState() {
     // Delete all current assignments
     assignments.forEach(a => {
       if ((a as any).id) {
-        batch.delete(doc(db, 'assignments', (a as any).id));
+        batch.delete(doc(db, 'staff_assignments', (a as any).id));
       }
     });
 
     // Write all updated assignments
     updatedList.forEach(a => {
-      const docRef = doc(collection(db, 'assignments'));
+      const docRef = doc(collection(db, 'staff_assignments'));
       batch.set(docRef, a);
     });
 
@@ -348,9 +299,9 @@ export function usePlanningState() {
     const docId = `${employeeId}_${date}`;
     const exists = manualLeaves.some(l => l.employeeId === employeeId && l.date === date);
     if (exists) {
-      await deleteDoc(doc(db, 'manualLeaves', docId));
+      await deleteDoc(doc(db, 'staff_manual_leaves', docId));
     } else {
-      await setDoc(doc(db, 'manualLeaves', docId), { employeeId, date });
+      await setDoc(doc(db, 'staff_manual_leaves', docId), { employeeId, date });
     }
   };
 
@@ -362,7 +313,7 @@ export function usePlanningState() {
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
       const docId = `${employeeId}_${dateStr}`;
-      batch.set(doc(db, 'manualLeaves', docId), { employeeId, date: dateStr });
+      batch.set(doc(db, 'staff_manual_leaves', docId), { employeeId, date: dateStr });
     }
 
     await batch.commit();
@@ -370,7 +321,7 @@ export function usePlanningState() {
 
   // Attendance
   const setSingleAttendance = async (employeeId: string, date: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
-    await setDoc(doc(db, 'attendance', `${employeeId}_${date}`), { status });
+    await setDoc(doc(db, 'staff_attendance', `${employeeId}_${date}`), { status });
   };
 
   const setBulkAttendance = async (employeeId: string, startDateStr: string, endDateStr: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
@@ -386,8 +337,36 @@ export function usePlanningState() {
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split('T')[0];
         const docId = `${id}_${dateStr}`;
-        batch.set(doc(db, 'attendance', docId), { status });
+        batch.set(doc(db, 'staff_attendance', docId), { status });
       }
+    });
+
+    await batch.commit();
+  };
+
+  const resetDatabase = async () => {
+    const batch = writeBatch(db);
+    
+    profiles.forEach(p => {
+      batch.delete(doc(db, 'staff_profiles', p.id));
+    });
+
+    projects.forEach(p => {
+      batch.delete(doc(db, 'staff_projects', p.name));
+    });
+
+    assignments.forEach(a => {
+      if ((a as any).id) {
+        batch.delete(doc(db, 'staff_assignments', (a as any).id));
+      }
+    });
+
+    manualLeaves.forEach(l => {
+      batch.delete(doc(db, 'staff_manual_leaves', `${l.employeeId}_${l.date}`));
+    });
+
+    Object.keys(attendance).forEach(key => {
+      batch.delete(doc(db, 'staff_attendance', key));
     });
 
     await batch.commit();
@@ -414,5 +393,6 @@ export function usePlanningState() {
     addManualLeaveRange,
     setSingleAttendance,
     setBulkAttendance,
+    resetDatabase,
   };
 }
