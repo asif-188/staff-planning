@@ -1,4 +1,13 @@
 import { useState, useEffect } from 'react';
+import { db } from '../firebase';
+import { 
+  collection, 
+  onSnapshot, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  writeBatch 
+} from 'firebase/firestore';
 
 export interface EmployeeProfile {
   id: string; // Unique Employee ID
@@ -72,50 +81,89 @@ const INITIAL_ASSIGNMENTS: ProjectAssignment[] = [
 ];
 
 export function usePlanningState() {
-  const [profiles, setProfiles] = useState<EmployeeProfile[]>(() => {
-    const saved = localStorage.getItem('v2_employee_profiles');
-    return saved ? JSON.parse(saved) : INITIAL_PROFILES;
-  });
+  const [profiles, setProfiles] = useState<EmployeeProfile[]>([]);
+  const [projects, setProjects] = useState<ProjectDetails[]>([]);
+  const [assignments, setAssignments] = useState<ProjectAssignment[]>([]);
+  const [attendance, setAttendance] = useState<AttendanceRecord>({});
+  const [manualLeaves, setManualLeaves] = useState<ManualLeave[]>([]);
 
-  const [projects, setProjects] = useState<ProjectDetails[]>(() => {
-    const saved = localStorage.getItem('v2_projects_list');
-    return saved ? JSON.parse(saved) : INITIAL_PROJECTS;
-  });
-
-  const [assignments, setAssignments] = useState<ProjectAssignment[]>(() => {
-    const saved = localStorage.getItem('v2_assignments_list');
-    return saved ? JSON.parse(saved) : INITIAL_ASSIGNMENTS;
-  });
-
-  const [attendance, setAttendance] = useState<AttendanceRecord>(() => {
-    const saved = localStorage.getItem('v2_attendance');
-    return saved ? JSON.parse(saved) : {};
-  });
-
-  const [manualLeaves, setManualLeaves] = useState<ManualLeave[]>(() => {
-    const saved = localStorage.getItem('v2_manual_leaves');
-    return saved ? JSON.parse(saved) : [];
-  });
-
+  // Subscriptions to Firestore Collections with auto-seeding if empty
   useEffect(() => {
-    localStorage.setItem('v2_employee_profiles', JSON.stringify(profiles));
-  }, [profiles]);
+    const unsubscribeProfiles = onSnapshot(collection(db, 'profiles'), async (snapshot) => {
+      const list: EmployeeProfile[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as EmployeeProfile);
+      });
+      if (snapshot.empty) {
+        for (const p of INITIAL_PROFILES) {
+          await setDoc(doc(db, 'profiles', p.id), {
+            name: p.name,
+            department: p.department,
+            function: p.function
+          });
+        }
+      } else {
+        setProfiles(list);
+      }
+    });
 
-  useEffect(() => {
-    localStorage.setItem('v2_projects_list', JSON.stringify(projects));
-  }, [projects]);
+    const unsubscribeProjects = onSnapshot(collection(db, 'projects'), async (snapshot) => {
+      const list: ProjectDetails[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ name: doc.id, ...doc.data() } as ProjectDetails);
+      });
+      if (snapshot.empty) {
+        for (const p of INITIAL_PROJECTS) {
+          await setDoc(doc(db, 'projects', p.name), {
+            budgetCode: p.budgetCode,
+            startDate: p.startDate,
+            endDate: p.endDate
+          });
+        }
+      } else {
+        setProjects(list);
+      }
+    });
 
-  useEffect(() => {
-    localStorage.setItem('v2_assignments_list', JSON.stringify(assignments));
-  }, [assignments]);
+    const unsubscribeAssignments = onSnapshot(collection(db, 'assignments'), async (snapshot) => {
+      const list: ProjectAssignment[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as any);
+      });
+      if (snapshot.empty) {
+        for (const a of INITIAL_ASSIGNMENTS) {
+          const docRef = doc(collection(db, 'assignments'));
+          await setDoc(docRef, a);
+        }
+      } else {
+        setAssignments(list);
+      }
+    });
 
-  useEffect(() => {
-    localStorage.setItem('v2_attendance', JSON.stringify(attendance));
-  }, [attendance]);
+    const unsubscribeAttendance = onSnapshot(collection(db, 'attendance'), (snapshot) => {
+      const record: AttendanceRecord = {};
+      snapshot.forEach((doc) => {
+        record[doc.id] = doc.data().status;
+      });
+      setAttendance(record);
+    });
 
-  useEffect(() => {
-    localStorage.setItem('v2_manual_leaves', JSON.stringify(manualLeaves));
-  }, [manualLeaves]);
+    const unsubscribeLeaves = onSnapshot(collection(db, 'manualLeaves'), (snapshot) => {
+      const list: ManualLeave[] = [];
+      snapshot.forEach((doc) => {
+        list.push(doc.data() as ManualLeave);
+      });
+      setManualLeaves(list);
+    });
+
+    return () => {
+      unsubscribeProfiles();
+      unsubscribeProjects();
+      unsubscribeAssignments();
+      unsubscribeAttendance();
+      unsubscribeLeaves();
+    };
+  }, []);
 
   // Employee Profile CRUD
   const addProfile = (p: EmployeeProfile) => {
@@ -123,23 +171,38 @@ export function usePlanningState() {
       alert(`Error: Employee ID '${p.id}' already exists.`);
       return false;
     }
-    setProfiles(prev => [...prev, p]);
+    setDoc(doc(db, 'profiles', p.id), {
+      name: p.name,
+      department: p.department,
+      function: p.function
+    });
     return true;
   };
 
-  const editProfile = (index: number, updated: EmployeeProfile) => {
-    setProfiles(prev => {
-      const next = [...prev];
-      next[index] = updated;
-      return next;
+  const editProfile = async (_index: number, updated: EmployeeProfile) => {
+    await setDoc(doc(db, 'profiles', updated.id), {
+      name: updated.name,
+      department: updated.department,
+      function: updated.function
     });
   };
 
-  const deleteProfile = (index: number) => {
+  const deleteProfile = async (index: number) => {
     const profile = profiles[index];
-    setProfiles(prev => prev.filter((_, i) => i !== index));
+    const batch = writeBatch(db);
+    
+    // Delete profile doc
+    batch.delete(doc(db, 'profiles', profile.id));
+    
     // Cascade delete assignments
-    setAssignments(prev => prev.filter(a => a.employeeId !== profile.id));
+    const relatedAssignments = assignments.filter(a => a.employeeId === profile.id);
+    relatedAssignments.forEach(a => {
+      if ((a as any).id) {
+        batch.delete(doc(db, 'assignments', (a as any).id));
+      }
+    });
+
+    await batch.commit();
   };
 
   // Projects CRUD
@@ -148,49 +211,102 @@ export function usePlanningState() {
       alert(`Error: Project named '${p.name}' already exists.`);
       return false;
     }
-    setProjects(prev => [...prev, p]);
+    setDoc(doc(db, 'projects', p.name), {
+      budgetCode: p.budgetCode,
+      startDate: p.startDate,
+      endDate: p.endDate
+    });
     return true;
   };
 
-  const editProject = (index: number, updated: ProjectDetails) => {
+  const editProject = async (index: number, updated: ProjectDetails) => {
     const oldProj = projects[index];
-    setProjects(prev => {
-      const next = [...prev];
-      next[index] = updated;
-      return next;
-    });
-    // Cascade update assignments if project name changes
+    const batch = writeBatch(db);
+
     if (oldProj.name !== updated.name) {
-      setAssignments(prev => prev.map(a => a.projectName === oldProj.name ? { ...a, projectName: updated.name } : a));
+      // Name changed: delete old doc and create new one
+      batch.delete(doc(db, 'projects', oldProj.name));
+      batch.set(doc(db, 'projects', updated.name), {
+        budgetCode: updated.budgetCode,
+        startDate: updated.startDate,
+        endDate: updated.endDate
+      });
+
+      // Cascade update assignments
+      const relatedAssignments = assignments.filter(a => a.projectName === oldProj.name);
+      relatedAssignments.forEach(a => {
+        if ((a as any).id) {
+          batch.update(doc(db, 'assignments', (a as any).id), { projectName: updated.name });
+        }
+      });
+    } else {
+      batch.set(doc(db, 'projects', updated.name), {
+        budgetCode: updated.budgetCode,
+        startDate: updated.startDate,
+        endDate: updated.endDate
+      });
     }
+
+    await batch.commit();
   };
 
-  const deleteProject = (index: number) => {
+  const deleteProject = async (index: number) => {
     const proj = projects[index];
-    setProjects(prev => prev.filter((_, i) => i !== index));
+    const batch = writeBatch(db);
+
+    // Delete project doc
+    batch.delete(doc(db, 'projects', proj.name));
+
     // Cascade delete assignments
-    setAssignments(prev => prev.filter(a => a.projectName !== proj.name));
+    const relatedAssignments = assignments.filter(a => a.projectName === proj.name);
+    relatedAssignments.forEach(a => {
+      if ((a as any).id) {
+        batch.delete(doc(db, 'assignments', (a as any).id));
+      }
+    });
+
+    await batch.commit();
   };
 
   // Assignments CRUD
-  const addAssignment = (a: ProjectAssignment) => {
-    setAssignments(prev => [...prev, a]);
+  const addAssignment = async (a: ProjectAssignment) => {
+    const docRef = doc(collection(db, 'assignments'));
+    await setDoc(docRef, a);
   };
 
-  const editAssignment = (index: number, updated: ProjectAssignment) => {
-    setAssignments(prev => {
-      const next = [...prev];
-      next[index] = updated;
-      return next;
+  const editAssignment = async (index: number, updated: ProjectAssignment) => {
+    const oldAssignment = assignments[index];
+    if (oldAssignment && (oldAssignment as any).id) {
+      const docId = (oldAssignment as any).id;
+      await setDoc(doc(db, 'assignments', docId), updated);
+    }
+  };
+
+  const deleteAssignment = async (index: number) => {
+    const oldAssignment = assignments[index];
+    if (oldAssignment && (oldAssignment as any).id) {
+      const docId = (oldAssignment as any).id;
+      await deleteDoc(doc(db, 'assignments', docId));
+    }
+  };
+
+  const bulkUpdateAssignments = async (updatedList: ProjectAssignment[]) => {
+    const batch = writeBatch(db);
+    
+    // Delete all current assignments
+    assignments.forEach(a => {
+      if ((a as any).id) {
+        batch.delete(doc(db, 'assignments', (a as any).id));
+      }
     });
-  };
 
-  const deleteAssignment = (index: number) => {
-    setAssignments(prev => prev.filter((_, i) => i !== index));
-  };
+    // Write all updated assignments
+    updatedList.forEach(a => {
+      const docRef = doc(collection(db, 'assignments'));
+      batch.set(docRef, a);
+    });
 
-  const bulkUpdateAssignments = (updatedList: ProjectAssignment[]) => {
-    setAssignments(updatedList);
+    await batch.commit();
   };
 
   // Get Joined/Merged structure for Planning and views compatibility
@@ -228,62 +344,53 @@ export function usePlanningState() {
   };
 
   // Set Manual Leaves
-  const toggleManualLeave = (employeeId: string, date: string) => {
-    setManualLeaves(prev => {
-      const exists = prev.some(l => l.employeeId === employeeId && l.date === date);
-      if (exists) {
-        return prev.filter(l => !(l.employeeId === employeeId && l.date === date));
-      } else {
-        return [...prev, { employeeId, date }];
-      }
-    });
+  const toggleManualLeave = async (employeeId: string, date: string) => {
+    const docId = `${employeeId}_${date}`;
+    const exists = manualLeaves.some(l => l.employeeId === employeeId && l.date === date);
+    if (exists) {
+      await deleteDoc(doc(db, 'manualLeaves', docId));
+    } else {
+      await setDoc(doc(db, 'manualLeaves', docId), { employeeId, date });
+    }
   };
 
-  const addManualLeaveRange = (employeeId: string, startDateStr: string, endDateStr: string) => {
+  const addManualLeaveRange = async (employeeId: string, startDateStr: string, endDateStr: string) => {
     const start = new Date(startDateStr);
     const end = new Date(endDateStr);
-    const newLeaves: ManualLeave[] = [];
+    const batch = writeBatch(db);
     
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split('T')[0];
-      newLeaves.push({ employeeId, date: dateStr });
+      const docId = `${employeeId}_${dateStr}`;
+      batch.set(doc(db, 'manualLeaves', docId), { employeeId, date: dateStr });
     }
 
-    setManualLeaves(prev => {
-      const filtered = prev.filter(l => !(l.employeeId === employeeId && l.date >= startDateStr && l.date <= endDateStr));
-      return [...filtered, ...newLeaves];
-    });
+    await batch.commit();
   };
 
   // Attendance
-  const setSingleAttendance = (employeeId: string, date: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
-    setAttendance(prev => ({
-      ...prev,
-      [`${employeeId}_${date}`]: status
-    }));
+  const setSingleAttendance = async (employeeId: string, date: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
+    await setDoc(doc(db, 'attendance', `${employeeId}_${date}`), { status });
   };
 
-  const setBulkAttendance = (employeeId: string, startDateStr: string, endDateStr: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
+  const setBulkAttendance = async (employeeId: string, startDateStr: string, endDateStr: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
     const start = new Date(startDateStr);
     const end = new Date(endDateStr);
-    const updates: AttendanceRecord = {};
+    const batch = writeBatch(db);
 
     const idsToUpdate = employeeId === 'ALL' 
       ? profiles.map(p => p.id) 
       : [employeeId];
 
     idsToUpdate.forEach(id => {
-      // Create a fresh Date pointer for each employee loop
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         const dateStr = d.toISOString().split('T')[0];
-        updates[`${id}_${dateStr}`] = status;
+        const docId = `${id}_${dateStr}`;
+        batch.set(doc(db, 'attendance', docId), { status });
       }
     });
 
-    setAttendance(prev => ({
-      ...prev,
-      ...updates
-    }));
+    await batch.commit();
   };
 
   return {
