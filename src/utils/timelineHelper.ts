@@ -1,4 +1,4 @@
-import type { Employee, ManualLeave } from '../hooks/usePlanningState';
+import type { Employee, LeaveRecord, ProjectAssignment, ProjectDetails } from '../hooks/usePlanningState';
 import { 
   startOfMonth, 
   endOfMonth, 
@@ -53,6 +53,13 @@ export function normalizeDateString(dateStr: string): string {
   return format(d, 'yyyy-MM-dd');
 }
 
+export function formatToClientDate(dateStr: string): string {
+  if (!dateStr) return '';
+  const d = safeParseDate(dateStr);
+  if (!isValid(d)) return dateStr;
+  return format(d, 'dd-MM-yyyy');
+}
+
 export function getDatesForMonth(monthStr: string): TimelineDate[] {
   // monthStr: YYYY-MM
   const parts = monthStr.split('-');
@@ -99,42 +106,84 @@ export function getDatesForInterval(startStr: string, endStr: string): TimelineD
   });
 }
 
+export function resolveStatusOnDate(
+  employeeId: string,
+  dateStr: string,
+  assignments: ProjectAssignment[],
+  projects: ProjectDetails[],
+  leaves: LeaveRecord[]
+): 'W' | 'T' | 'L' | 'S' | '' {
+  if (!employeeId || !dateStr) return '';
+  const date = safeParseDate(dateStr);
+  if (isNaN(date.getTime())) return '';
+
+  // 1. Check approved leave record first (Leave overrides active project assignment on those dates)
+  const isApprovedLeave = (leaves || []).some(l => {
+    if (l.employeeId !== employeeId || l.status !== 'Approved') return false;
+    const from = safeParseDate(l.fromDate);
+    const to = safeParseDate(l.toDate);
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) return false;
+    return date >= from && date <= to;
+  });
+
+  if (isApprovedLeave) {
+    return 'L';
+  }
+
+  // 2. Check active assignment
+  const empAssignments = assignments.filter(a => a.employeeId === employeeId);
+  let activeAssignment: ProjectAssignment | null = null;
+  let activeStart: Date | null = null;
+  let activeEnd: Date | null = null;
+
+  for (const a of empAssignments) {
+    const foundProj = projects.find(p => p.name === a.projectName);
+    const startStr = a.travelStartDate || foundProj?.startDate || '';
+    const endStr = a.travelEndDate || foundProj?.endDate || '';
+    if (startStr && endStr) {
+      const start = safeParseDate(startStr);
+      const end = safeParseDate(endStr);
+      if (date >= start && date <= end) {
+        activeAssignment = a;
+        activeStart = start;
+        activeEnd = end;
+        break;
+      }
+    }
+  }
+
+  if (activeAssignment) {
+    // First day and last day is 'T' (Travel)
+    if (activeStart && activeEnd) {
+      if (isSameDay(date, activeStart) || isSameDay(date, activeEnd)) {
+        return 'T';
+      }
+    }
+    return 'W';
+  }
+
+  // 3. Otherwise -> Standby
+  return 'S';
+}
+
 export function getCellStatus(
   employee: Employee,
   dateStr: string,
-  manualLeaves: ManualLeave[]
-): 'W' | 'T' | 'L' | '' {
-  const start = safeParseDate(employee.travelStartDate || employee.projectStartDate);
-  const end = safeParseDate(employee.travelEndDate || employee.projectEndDate);
-  const date = safeParseDate(dateStr);
-
-  // Outside the travel range
-  if (isNaN(start.getTime()) || isNaN(end.getTime()) || date < start || date > end) {
-    return '';
-  }
-
-  // 1. Check manual leaves first (manual leaves override assignment status)
-  const hasManualLeave = manualLeaves.some(
-    l => l.employeeId === employee.id && l.date === dateStr
-  );
-  if (hasManualLeave) {
-    return 'L';
-  }
-
-  // 2. Map based on assignment status
-  if (employee.status === 'Leave') {
-    return 'L';
-  }
-
-  if (employee.status === 'Travelling') {
-    return 'T';
-  }
-
-  // If status is 'Working': First day (travel start) and Last day (travel end) are Travel (T)
-  if (isSameDay(date, start) || isSameDay(date, end)) {
-    return 'T';
-  }
-
-  // Otherwise Working (W)
-  return 'W';
+  leaves: LeaveRecord[]
+): 'W' | 'T' | 'L' | 'S' | '' {
+  const assignments: ProjectAssignment[] = [{
+    employeeId: employee.id,
+    projectName: employee.project,
+    travelStartDate: employee.travelStartDate,
+    travelEndDate: employee.travelEndDate,
+    status: employee.status || 'Working',
+    remarks: employee.remarks
+  }];
+  const projects: ProjectDetails[] = [{
+    name: employee.project,
+    budgetCode: employee.budgetCode,
+    startDate: employee.projectStartDate,
+    endDate: employee.projectEndDate
+  }];
+  return resolveStatusOnDate(employee.id, dateStr, assignments, projects, leaves);
 }

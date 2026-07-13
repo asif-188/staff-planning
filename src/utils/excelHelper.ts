@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
-import type { Employee, AttendanceRecord, ManualLeave, EmployeeProfile, ProjectDetails } from '../hooks/usePlanningState';
-import { getDatesForMonth, getCellStatus, getDatesForInterval } from './timelineHelper';
+import type { Employee, LeaveRecord, EmployeeProfile, ProjectDetails, ProjectAssignment } from '../hooks/usePlanningState';
+import { getDatesForInterval, resolveStatusOnDate, formatToClientDate, safeParseDate } from './timelineHelper';
 import { format } from 'date-fns';
 
 // Helper to get color code fill for Planning and Attendance cells
@@ -9,15 +9,11 @@ const getStatusFill = (status: string) => {
     case 'W':
       return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'DCE6F1' } }; // Light Blue
     case 'L':
-      return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'E4E4E7' } }; // Gray
-    case 'T':
       return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F3E8FF' } }; // Light Purple
-    case 'A':
-      return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FEE2E2' } }; // Light Red
-    case 'H':
-      return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'DCFCE7' } }; // Light Green
-    case 'HD':
-      return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FEF9C3' } }; // Light Yellow
+    case 'T':
+      return { type: 'pattern', pattern: 'solid', fgColor: { argb: '7C3AED' } }; // Dark Purple
+    case 'S':
+      return { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDD5' } }; // Light Orange
     default:
       return null;
   }
@@ -25,440 +21,13 @@ const getStatusFill = (status: string) => {
 
 const getStatusFontColor = (status: string) => {
   switch (status) {
-    case 'W': return '1E40AF'; // Dark Blue
-    case 'L': return '3F3F46'; // Dark Gray
-    case 'T': return '6B21A8'; // Dark Purple
-    case 'A': return '991B1B'; // Dark Red
-    case 'H': return '166534'; // Dark Green
-    case 'HD': return '854D0E'; // Dark Yellow
+    case 'W': return '000000'; // Black text
+    case 'L': return '000000'; // Black text
+    case 'T': return 'FFFFFF'; // White text
+    case 'S': return 'C2410C'; // Dark Orange
     default: return '000000';
   }
 };
-
-export async function exportToExcel(
-  employees: Employee[],
-  attendance: AttendanceRecord,
-  manualLeaves: ManualLeave[],
-  currentMonth: string // YYYY-MM
-) {
-  const workbook = new ExcelJS.Workbook();
-  const dates = getDatesForMonth(currentMonth);
-
-  // ==========================================
-  // 1. MASTER SHEET TABS
-  // ==========================================
-  const masterSheet = workbook.addWorksheet('Master Sheet');
-  masterSheet.columns = [
-    { header: 'Employee ID', key: 'id', width: 15 },
-    { header: 'Employee Name', key: 'name', width: 25 },
-    { header: 'Department', key: 'department', width: 20 },
-    { header: 'Function', key: 'function', width: 20 },
-    { header: 'Project', key: 'project', width: 20 },
-    { header: 'Budget Code', key: 'budgetCode', width: 18 },
-    { header: 'Project Start Date', key: 'projectStartDate', width: 18 },
-    { header: 'Project End Date', key: 'projectEndDate', width: 18 },
-    { header: 'Travel Start Date', key: 'travelStartDate', width: 18 },
-    { header: 'Travel End Date', key: 'travelEndDate', width: 18 },
-    { header: 'Status', key: 'status', width: 15 },
-    { header: 'Remarks', key: 'remarks', width: 30 }
-  ];
-
-  // Stylize master headers
-  masterSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
-  masterSheet.getRow(1).fill = {
-    type: 'pattern',
-    pattern: 'solid',
-    fgColor: { argb: '4F46E5' } // Indigo
-  };
-
-  employees.forEach(emp => {
-    masterSheet.addRow(emp);
-  });
-
-  // ==========================================
-  // 2. PLANNING SHEET TAB
-  // ==========================================
-  const planningSheet = workbook.addWorksheet('Planning Sheet');
-  
-  // Row 1: Month name merged
-  // Row 2: Week numbers
-  // Row 3: Day labels (Mon, Tue...)
-  // Row 4: Dates (1, 2, 3...)
-  // Row 5+: Data rows
-  const timelineStartCol = 7; // After Name, Dept, Function, Project, Start, End
-
-  const rowMonth = planningSheet.getRow(1);
-  const rowWeek = planningSheet.getRow(2);
-  const rowDay = planningSheet.getRow(3);
-  const rowDate = planningSheet.getRow(4);
-
-  // Write static headers
-  const staticHeaders = ['Employee Name', 'Department', 'Function', 'Project', 'Project Start', 'Project End'];
-  staticHeaders.forEach((h, idx) => {
-    const cell = planningSheet.getCell(1, idx + 1);
-    cell.value = h;
-    cell.font = { bold: true, color: { argb: 'FFFFFF' } };
-    cell.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: '4F46E5' } // Indigo
-    };
-    cell.alignment = { vertical: 'middle', horizontal: 'center' };
-    planningSheet.mergeCells(1, idx + 1, 4, idx + 1);
-  });
-
-  // Write timeline headers
-  dates.forEach((d, idx) => {
-    const colIdx = timelineStartCol + idx;
-    
-    // Month
-    rowMonth.getCell(colIdx).value = d.monthLabel;
-    
-    // Week
-    rowWeek.getCell(colIdx).value = `Wk ${d.weekNum}`;
-    
-    // Day Label
-    rowDay.getCell(colIdx).value = d.dayLabel;
-    
-    // Date Num
-    rowDate.getCell(colIdx).value = parseInt(d.dayNum, 10);
-  });
-
-  // Merge months dynamically
-  let monthStart = timelineStartCol;
-  for (let i = 1; i <= dates.length; i++) {
-    if (i === dates.length || dates[i].monthLabel !== dates[i - 1].monthLabel) {
-      if (monthStart < timelineStartCol + i - 1) {
-        planningSheet.mergeCells(1, monthStart, 1, timelineStartCol + i - 1);
-      }
-      monthStart = timelineStartCol + i;
-    }
-  }
-
-  // Merge weeks dynamically
-  let weekStart = timelineStartCol;
-  for (let i = 1; i <= dates.length; i++) {
-    if (i === dates.length || dates[i].weekNum !== dates[i - 1].weekNum) {
-      if (weekStart < timelineStartCol + i - 1) {
-        planningSheet.mergeCells(2, weekStart, 2, timelineStartCol + i - 1);
-      }
-      weekStart = timelineStartCol + i;
-    }
-  }
-
-  // Set timeline header styling
-  for (let r = 1; r <= 4; r++) {
-    const row = planningSheet.getRow(r);
-    row.alignment = { vertical: 'middle', horizontal: 'center' };
-    row.font = { bold: true, size: 9 };
-  }
-
-  // Set column widths for timeline
-  for (let i = 0; i < dates.length; i++) {
-    const col = planningSheet.getColumn(timelineStartCol + i);
-    col.width = 4.5;
-  }
-  // Base columns width
-  for (let i = 1; i < timelineStartCol; i++) {
-    planningSheet.getColumn(i).width = 18;
-  }
-
-  // Write rows
-  employees.forEach((emp, empIdx) => {
-    const rowIdx = 5 + empIdx;
-    const row = planningSheet.getRow(rowIdx);
-    
-    row.getCell(1).value = emp.name;
-    row.getCell(2).value = emp.department;
-    row.getCell(3).value = emp.function;
-    row.getCell(4).value = emp.project;
-    row.getCell(5).value = emp.projectStartDate;
-    row.getCell(6).value = emp.projectEndDate;
-
-    dates.forEach((d, dIdx) => {
-      const colIdx = timelineStartCol + dIdx;
-      const cell = row.getCell(colIdx);
-      const status = getCellStatus(emp, d.dateStr, manualLeaves);
-      cell.value = status;
-      cell.alignment = { horizontal: 'center' };
-      
-      const fill = getStatusFill(status);
-      if (fill) {
-        cell.fill = fill as any;
-        cell.font = { bold: true, color: { argb: getStatusFontColor(status) }, size: 9 };
-      }
-    });
-  });
-
-  // Freeze Panes for Planning Sheet (Sticky Columns & Rows)
-  planningSheet.views = [
-    { state: 'frozen', xSplit: 6, ySplit: 4 }
-  ];
-
-  // ==========================================
-  // 3. ATTENDANCE SHEET TAB
-  // ==========================================
-  const attSheet = workbook.addWorksheet('Attendance Sheet');
-  
-  // Attendance headers
-  const attStaticCols = ['Employee Name', 'Department', 'Function', 'Project'];
-  attStaticCols.forEach((h, idx) => {
-    attSheet.getCell(3, idx + 1).value = h;
-    attSheet.getCell(3, idx + 1).font = { bold: true };
-    attSheet.mergeCells(1, idx + 1, 3, idx + 1);
-  });
-
-  dates.forEach((d, idx) => {
-    const colIdx = 5 + idx;
-    attSheet.getCell(1, colIdx).value = d.monthLabel;
-    attSheet.getCell(2, colIdx).value = d.dayLabel;
-    attSheet.getCell(3, colIdx).value = parseInt(d.dayNum, 10);
-  });
-
-  // Merge months for attendance
-  let attMonthStart = 5;
-  for (let i = 1; i <= dates.length; i++) {
-    if (i === dates.length || dates[i].monthLabel !== dates[i - 1].monthLabel) {
-      if (attMonthStart < 5 + i - 1) {
-        attSheet.mergeCells(1, attMonthStart, 1, 5 + i - 1);
-      }
-      attMonthStart = 5 + i;
-    }
-  }
-
-  // Style headers
-  for (let r = 1; r <= 3; r++) {
-    const row = attSheet.getRow(r);
-    row.alignment = { vertical: 'middle', horizontal: 'center' };
-    row.font = { bold: true, size: 9 };
-  }
-
-  for (let i = 0; i < dates.length; i++) {
-    attSheet.getColumn(5 + i).width = 4.5;
-  }
-  for (let i = 1; i <= 4; i++) {
-    attSheet.getColumn(i).width = 18;
-  }
-
-  employees.forEach((emp, empIdx) => {
-    const rowIdx = 4 + empIdx;
-    const row = attSheet.getRow(rowIdx);
-    row.getCell(1).value = emp.name;
-    row.getCell(2).value = emp.department;
-    row.getCell(3).value = emp.function;
-    row.getCell(4).value = emp.project;
-
-    dates.forEach((d, dIdx) => {
-      const colIdx = 5 + dIdx;
-      const cell = row.getCell(colIdx);
-      // Fallback to auto planning status if no manual attendance marked
-      const planStatus = getCellStatus(emp, d.dateStr, manualLeaves);
-      const attStatus = attendance[`${emp.id}_${d.dateStr}`] || planStatus || '';
-      
-      cell.value = attStatus;
-      cell.alignment = { horizontal: 'center' };
-      
-      const fill = getStatusFill(attStatus);
-      if (fill) {
-        cell.fill = fill as any;
-        cell.font = { bold: true, color: { argb: getStatusFontColor(attStatus) }, size: 9 };
-      }
-    });
-  });
-
-  attSheet.views = [
-    { state: 'frozen', xSplit: 4, ySplit: 3 }
-  ];
-
-  // ==========================================
-  // 4. SUMMARY REPORT TAB
-  // ==========================================
-  const summarySheet = workbook.addWorksheet('Summary Report');
-  summarySheet.columns = [
-    { header: 'Employee Name', key: 'name', width: 25 },
-    { header: 'Department', key: 'department', width: 20 },
-    { header: 'Function', key: 'function', width: 20 },
-    { header: 'Working Days', key: 'working', width: 15 },
-    { header: 'Leave Days', key: 'leave', width: 15 },
-    { header: 'Travel Days', key: 'travel', width: 15 },
-    { header: 'Absent Days', key: 'absent', width: 15 },
-    { header: 'Holiday', key: 'holiday', width: 15 },
-    { header: 'Half Day', key: 'halfday', width: 15 },
-    { header: 'Attendance %', key: 'attendanceRate', width: 18 }
-  ];
-
-  summarySheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
-  summarySheet.getRow(1).fill = {
-    type: 'pattern',
-    pattern: 'solid',
-    fgColor: { argb: '0F172A' } // Dark Slate
-  };
-
-  employees.forEach(emp => {
-    let working = 0, leave = 0, travel = 0, absent = 0, holiday = 0, halfday = 0;
-    
-    dates.forEach(d => {
-      const planStatus = getCellStatus(emp, d.dateStr, manualLeaves);
-      const status = attendance[`${emp.id}_${d.dateStr}`] || planStatus;
-      
-      if (status === 'W') working++;
-      else if (status === 'L') leave++;
-      else if (status === 'T') travel++;
-      else if (status === 'A') absent++;
-      else if (status === 'H') holiday++;
-      else if (status === 'HD') halfday++;
-    });
-
-    const activeDays = working + travel + halfday * 0.5;
-    const totalScheduled = working + travel + leave + absent + halfday + holiday;
-    const rate = totalScheduled > 0 ? (activeDays / totalScheduled) * 100 : 100;
-
-    summarySheet.addRow({
-      name: emp.name,
-      department: emp.department,
-      function: emp.function,
-      working,
-      leave,
-      travel,
-      absent,
-      holiday,
-      halfday,
-      attendanceRate: `${rate.toFixed(1)}%`
-    });
-  });
-
-  // Write and Save
-  const buffer = await workbook.xlsx.writeBuffer();
-  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Staff_Planning_Report_${currentMonth}.xlsx`;
-  a.click();
-  window.URL.revokeObjectURL(url);
-}
-
-// Excel JS Import Parser
-export async function importFromExcel(file: File): Promise<Employee[]> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const buffer = e.target?.result as ArrayBuffer;
-        const workbook = new ExcelJS.Workbook();
-        await workbook.xlsx.load(buffer);
-
-        // Find the sheet (look for 'Master' or get the first sheet)
-        let sheet = workbook.worksheets.find(w => w.name.toLowerCase().includes('master'));
-        if (!sheet) {
-          sheet = workbook.worksheets[0];
-        }
-
-        if (!sheet) {
-          reject(new Error("No sheet found in Excel workbook"));
-          return;
-        }
-
-        const employees: Employee[] = [];
-        
-        // Parse columns dynamically to map them
-        const headerRow = sheet.getRow(1);
-        const colIndices: { [key: string]: number } = {};
-        
-        headerRow.eachCell((cell, colNumber) => {
-          const value = cell.value?.toString().toLowerCase().trim() || '';
-          if (value.includes('id')) colIndices.id = colNumber;
-          else if (value.includes('name')) colIndices.name = colNumber;
-          else if (value.includes('dept') || value.includes('department')) colIndices.department = colNumber;
-          else if (value.includes('func') || value.includes('role')) colIndices.function = colNumber;
-          else if (value.includes('project')) colIndices.project = colNumber;
-          else if (value.includes('budget')) colIndices.budgetCode = colNumber;
-          else if (value.includes('start') && !value.includes('travel')) colIndices.projectStartDate = colNumber;
-          else if (value.includes('end') && !value.includes('travel')) colIndices.projectEndDate = colNumber;
-          else if (value.includes('travel') && value.includes('start')) colIndices.travelStartDate = colNumber;
-          else if (value.includes('travel') && value.includes('end')) colIndices.travelEndDate = colNumber;
-          else if (value.includes('status')) colIndices.status = colNumber;
-          else if (value.includes('remark')) colIndices.remarks = colNumber;
-        });
-
-        // Use default columns fallback if headers not matching
-        const idCol = colIndices.id || 1;
-        const nameCol = colIndices.name || 2;
-        const deptCol = colIndices.department || 3;
-        const funcCol = colIndices.function || 4;
-        const projCol = colIndices.project || 5;
-        const budgetCol = colIndices.budgetCode || 6;
-        const startCol = colIndices.projectStartDate || 7;
-        const endCol = colIndices.projectEndDate || 8;
-        const travelStartCol = colIndices.travelStartDate || 9;
-        const travelEndCol = colIndices.travelEndDate || 10;
-        const statusCol = colIndices.status || 11;
-        const remarkCol = colIndices.remarks || 12;
-
-        sheet.eachRow((row, rowNumber) => {
-          if (rowNumber === 1) return; // Skip header
-
-          const idVal = row.getCell(idCol).value?.toString().trim();
-          const nameVal = row.getCell(nameCol).value?.toString().trim();
-          if (!idVal || !nameVal) return; // Skip empty rows
-
-          const getVal = (col: number) => {
-            const v = row.getCell(col).value;
-            if (v instanceof Date) {
-              return v.toISOString().split('T')[0];
-            }
-            if (v && typeof v === 'object' && 'result' in v) {
-              return v.result?.toString() || '';
-            }
-            return v?.toString().trim() || '';
-          };
-
-          const parseDate = (val: string) => {
-            if (!val) return '';
-            try {
-              // Handle Excel serial date numbers or text
-              const d = new Date(val);
-              if (isNaN(d.getTime())) return val;
-              return d.toISOString().split('T')[0];
-            } catch {
-              return val;
-            }
-          };
-
-          const projStart = parseDate(getVal(startCol));
-          const projEnd = parseDate(getVal(endCol));
-          const travelStart = parseDate(getVal(travelStartCol)) || projStart;
-          const travelEnd = parseDate(getVal(travelEndCol)) || projEnd;
-          let statusVal = getVal(statusCol) as any;
-          if (!['Active', 'On Leave', 'Travelling', 'Available'].includes(statusVal)) {
-            statusVal = 'Active';
-          }
-
-          employees.push({
-            id: idVal,
-            name: nameVal,
-            department: getVal(deptCol) || 'Operations',
-            function: getVal(funcCol) || 'Staff',
-            project: getVal(projCol) || 'Internal',
-            budgetCode: getVal(budgetCol) || 'BC-GENERAL',
-            projectStartDate: projStart || format(new Date(), 'yyyy-MM-dd'),
-            projectEndDate: projEnd || format(new Date(), 'yyyy-MM-dd'),
-            travelStartDate: travelStart,
-            travelEndDate: travelEnd,
-            status: statusVal,
-            remarks: getVal(remarkCol) || ''
-          });
-        });
-
-        resolve(employees);
-      } catch (err) {
-        reject(err);
-      }
-    };
-    reader.onerror = () => reject(new Error("FileReader error"));
-    reader.readAsArrayBuffer(file);
-  });
-}
 
 export async function exportAvailabilityReportToExcel(
   results: {
@@ -493,9 +62,9 @@ export async function exportAvailabilityReportToExcel(
     'Employee ID',
     'Employee Name',
     'Department',
-    'Function',
+    'Designation',
     'Available Periods (in Range)',
-    'Total Free Days',
+    'Total Standby Days',
     'Allocation Status / Details'
   ]);
   
@@ -524,7 +93,7 @@ export async function exportAvailabilityReportToExcel(
       res.employee.id,
       res.employee.name,
       res.employee.department,
-      res.employee.function,
+      res.employee.designation,
       rangeText,
       `${res.totalFreeDays} Days`,
       res.occupiedDetails
@@ -536,7 +105,12 @@ export async function exportAvailabilityReportToExcel(
     const row = sheet.getRow(r);
     row.getCell(5).font = { color: { argb: '166534' }, bold: true }; // Green text
     row.getCell(6).font = { color: { argb: '1E40AF' }, bold: true }; // Blue text
-    row.getCell(7).font = { color: { argb: '475569' } };
+    const statusVal = row.getCell(7).value?.toString();
+    if (statusVal === 'Standby') {
+      row.getCell(7).font = { color: { argb: 'C2410C' }, bold: true }; // Orange text
+    } else {
+      row.getCell(7).font = { color: { argb: '475569' } };
+    }
   }
 
   // Write and Save
@@ -550,18 +124,718 @@ export async function exportAvailabilityReportToExcel(
   window.URL.revokeObjectURL(url);
 }
 
-export async function exportAttendanceToExcel(
+export async function exportDatabaseToExcel(
   profiles: EmployeeProfile[],
-  employees: Employee[],
-  attendance: AttendanceRecord,
-  dates: { dateStr: string; dayNum: string; dayLabel: string; isWeekend: boolean }[],
-  monthStr: string,
-  displayMonthName: string
+  projects: ProjectDetails[],
+  assignments: ProjectAssignment[]
+) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Master Sheet');
+
+  // Columns A-D widths
+  sheet.getColumn(1).width = 25; // Department
+  sheet.getColumn(2).width = 15; // Employee ID
+  sheet.getColumn(3).width = 30; // Name
+  sheet.getColumn(4).width = 25; // Function / Designation
+
+  // Write static title headers in columns A-D
+  sheet.mergeCells('A1:D1');
+  const title1 = sheet.getCell('A1');
+  title1.value = 'Project STAFF working schedule';
+  title1.font = { bold: true, size: 12 };
+  title1.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  sheet.mergeCells('A2:D2');
+  const title2 = sheet.getCell('A2');
+  title2.value = 'Maitenance Dredging at kakinada Deep water Port year 2025_07/Sep/25';
+  title2.font = { bold: true, size: 10, italic: true };
+  title2.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  // Row 4: A4: 'Department', B4: 'Employee ID', C4: 'Name', D4: 'Function'
+  sheet.getCell('A4').value = 'Department';
+  sheet.getCell('B4').value = 'Employee ID';
+  sheet.getCell('C4').value = 'Name';
+  sheet.getCell('D4').value = 'Function';
+  
+  for (let c = 1; c <= 4; c++) {
+    sheet.getCell(4, c).font = { bold: true };
+    sheet.getCell(4, c).alignment = { vertical: 'middle' };
+  }
+
+  // Write project columns starting from Column E (Col 5)
+  projects.forEach((proj, idx) => {
+    const startCol = 5 + idx * 2;
+    const endCol = 6 + idx * 2;
+
+    sheet.getColumn(startCol).width = 15;
+    sheet.getColumn(endCol).width = 15;
+
+    // Row 1: Merged 'Budget Code'
+    sheet.mergeCells(1, startCol, 1, endCol);
+    const budgetLabel = sheet.getCell(1, startCol);
+    budgetLabel.value = 'Budget Code';
+    budgetLabel.font = { bold: true };
+    budgetLabel.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Row 2: Merged Project Budget Code
+    sheet.mergeCells(2, startCol, 2, endCol);
+    const budgetVal = sheet.getCell(2, startCol);
+    budgetVal.value = proj.budgetCode || '';
+    budgetVal.font = { bold: true };
+    budgetVal.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Row 3: Start Date and End Date
+    const startCell = sheet.getCell(3, startCol);
+    startCell.value = formatToClientDate(proj.startDate);
+    startCell.font = { bold: true };
+    startCell.alignment = { horizontal: 'center' };
+
+    const endCell = sheet.getCell(3, endCol);
+    endCell.value = formatToClientDate(proj.endDate);
+    endCell.font = { bold: true };
+    endCell.alignment = { horizontal: 'center' };
+
+    // Row 4: Merged Project Name
+    sheet.mergeCells(4, startCol, 4, endCol);
+    const nameCell = sheet.getCell(4, startCol);
+    nameCell.value = proj.name;
+    nameCell.font = { bold: true };
+    nameCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+
+  // Sort employees by Department, then by Name
+  const sortedProfiles = [...profiles].sort((a, b) => {
+    const deptCompare = (a.department || '').localeCompare(b.department || '');
+    if (deptCompare !== 0) return deptCompare;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  // Populate Employee Rows starting at Row 5
+  sortedProfiles.forEach((emp, rIdx) => {
+    const rowIdx = 5 + rIdx;
+    const r = sheet.getRow(rowIdx);
+    r.height = 20;
+
+    r.getCell(1).value = emp.department;
+    r.getCell(2).value = emp.id;
+    r.getCell(3).value = emp.name;
+    r.getCell(4).value = emp.designation;
+
+    projects.forEach((proj, pIdx) => {
+      const startCol = 5 + pIdx * 2;
+      const endCol = 6 + pIdx * 2;
+
+      // Find if this employee is assigned to this project
+      const assign = assignments.find(a => a.employeeId === emp.id && a.projectName === proj.name);
+      if (assign) {
+        r.getCell(startCol).value = formatToClientDate(assign.travelStartDate || proj.startDate);
+        r.getCell(endCol).value = formatToClientDate(assign.travelEndDate || proj.endDate);
+      } else {
+        r.getCell(startCol).value = '';
+        r.getCell(endCol).value = '';
+      }
+
+      r.getCell(startCol).alignment = { horizontal: 'center' };
+      r.getCell(endCol).alignment = { horizontal: 'center' };
+    });
+
+    // Style borders for row cells
+    for (let c = 1; c <= 4 + projects.length * 2; c++) {
+      const cell = r.getCell(c);
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+    }
+  });
+
+  // Add cell borders to all header cells (rows 1-4)
+  for (let rowNum = 1; rowNum <= 4; rowNum++) {
+    const headerRow = sheet.getRow(rowNum);
+    for (let c = 1; c <= 4 + projects.length * 2; c++) {
+      const cell = headerRow.getCell(c);
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: '94A3B8' } },
+        right: { style: 'thin', color: { argb: '94A3B8' } }
+      };
+    }
+  }
+
+  // Freeze Columns A-D and Rows 1-4
+  sheet.views = [
+    { state: 'frozen', xSplit: 4, ySplit: 4 }
+  ];
+
+  // Save Workbook
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Master_Planning_Schedule.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+// 2. Export Dashboard Reports (Leave list, Standby list, Leave Balance = 0)
+export async function exportDashboardToExcel(
+  onLeave: any[],
+  standbyList: any[],
+  zeroBalance: any[],
+  startDate: string,
+  endDate: string
+) {
+  const workbook = new ExcelJS.Workbook();
+
+  // Tab 1: Staff on Leave
+  const leaveSheet = workbook.addWorksheet('Employees on Leave');
+  leaveSheet.columns = [
+    { header: 'Employee ID', key: 'id', width: 15 },
+    { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Project', key: 'project', width: 25 },
+    { header: 'Leave Period', key: 'leavePeriod', width: 30 },
+    { header: 'Remarks', key: 'remarks', width: 30 }
+  ];
+  leaveSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  leaveSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F43F5E' } }; // Rose
+
+  onLeave.forEach(item => {
+    leaveSheet.addRow({
+      id: item.id,
+      name: item.name,
+      project: item.project,
+      leavePeriod: item.leavePeriod,
+      remarks: item.remarks
+    });
+  });
+
+  // Tab 2: Standby Employees
+  const standbySheet = workbook.addWorksheet('Standby Employees');
+  standbySheet.columns = [
+    { header: 'Employee ID', key: 'id', width: 15 },
+    { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Last Project', key: 'lastProject', width: 25 },
+    { header: 'Standby Period', key: 'standbyPeriod', width: 25 },
+    { header: 'Standby Days Count', key: 'standbyDaysCount', width: 20 }
+  ];
+  standbySheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  standbySheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F97316' } }; // Orange
+
+  standbyList.forEach(item => {
+    standbySheet.addRow(item);
+  });
+
+  // Tab 3: Leave Balance = 0
+  const zeroSheet = workbook.addWorksheet('Leave Balance = 0');
+  zeroSheet.columns = [
+    { header: 'Employee ID', key: 'id', width: 15 },
+    { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Department', key: 'department', width: 20 },
+    { header: 'Leaves Taken (Days)', key: 'leavesTaken', width: 20 }
+  ];
+  zeroSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  zeroSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'EF4444' } }; // Red
+
+  zeroBalance.forEach(item => {
+    zeroSheet.addRow(item);
+  });
+
+  // Save File
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Dashboard_Analytics_${startDate}_to_${endDate}.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+// 3. Export Planning Grid (With grouping and travel mapped to W)
+export async function exportPlanningGridToExcel(
+  assignments: ProjectAssignment[],
+  profiles: EmployeeProfile[],
+  projects: ProjectDetails[],
+  leaves: LeaveRecord[],
+  startDate: string,
+  endDate: string
+) {
+  const workbook = new ExcelJS.Workbook();
+  const getActiveProjectOnDate = (employeeId: string, dateStr: string) => {
+    const match = assignments.find(a => {
+      if (a.employeeId !== employeeId) return false;
+      const proj = projects.find(p => p.name === a.projectName);
+      const start = a.travelStartDate || proj?.startDate || '';
+      const end = a.travelEndDate || proj?.endDate || '';
+      return dateStr >= start && dateStr <= end;
+    });
+    return match ? match.projectName : '';
+  };
+
+  // ==================== SHEET 1: Planning Grid ====================
+  const planningSheet = workbook.addWorksheet('Planning Grid');
+  const dates = getDatesForInterval(startDate, endDate);
+  
+  // Set column widths
+  planningSheet.getColumn(1).width = 28; // Employee Name (A)
+  planningSheet.getColumn(2).width = 22; // Designation / Function (B)
+  for (let i = 0; i < dates.length; i++) {
+    planningSheet.getColumn(3 + i).width = 4.5; // Timeline dates start at Column 3 (C)
+  }
+
+  let nextRow = 1;
+
+  // Render project-by-project blocks
+  projects.forEach((project, projIdx) => {
+    // Find assignments matching this project
+    const projAssignments = assignments.filter(a => a.projectName === project.name);
+    if (projAssignments.length === 0) return; // Skip projects with no assignments
+
+    if (projIdx > 0 || nextRow > 1) {
+      nextRow += 2; // Insert 2 blank rows between blocks
+    }
+
+    // Write BUDGET - Project Name header
+    const r1 = planningSheet.getRow(nextRow);
+    r1.getCell(1).value = 'BUDGET - Project Name';
+    r1.getCell(1).font = { bold: true, color: { argb: '10B981' } }; // Green font
+    r1.getCell(2).value = project.name;
+    r1.getCell(2).font = { bold: true };
+
+    // Write Budget Code
+    const r2 = planningSheet.getRow(nextRow + 1);
+    r2.getCell(2).value = project.budgetCode || '';
+    r2.getCell(2).font = { bold: true };
+    r2.getCell(2).alignment = { horizontal: 'center' };
+
+    // Write Row 4: Name, Designation, and project dates overlay
+    const r4 = planningSheet.getRow(nextRow + 3);
+    r4.getCell(1).value = 'Name';
+    r4.getCell(1).font = { bold: true };
+    r4.getCell(2).value = 'Designation';
+    r4.getCell(2).font = { bold: true };
+
+    const startClientDate = formatToClientDate(project.startDate);
+    r4.getCell(3).value = startClientDate;
+    r4.getCell(3).font = { bold: true };
+    r4.getCell(3).alignment = { horizontal: 'center' };
+
+    r4.getCell(4).value = 'Project End Dat';
+    r4.getCell(4).font = { bold: true };
+    r4.getCell(4).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF00' } }; // Yellow
+    r4.getCell(4).alignment = { horizontal: 'center' };
+
+    const endClientDate = formatToClientDate(project.endDate);
+    r4.getCell(5).value = endClientDate;
+    r4.getCell(5).font = { bold: true };
+    r4.getCell(5).alignment = { horizontal: 'center' };
+
+    // Day numbers header (Row 3 of this block)
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
+      dayCell.value = parseInt(d.dayNum, 10);
+      dayCell.alignment = { horizontal: 'center' };
+      dayCell.font = { size: 9, bold: true };
+      
+      if (d.isWeekend) {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D1FAE5' } }; // light green weekend
+      } else {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      }
+      dayCell.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+
+      // Border style for empty Row 4 timeline cells
+      if (colIdx > 5) {
+        const cell4 = r4.getCell(colIdx);
+        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+        cell4.border = {
+          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+          right: { style: 'thin', color: { argb: 'CBD5E1' } }
+        };
+      }
+    });
+
+    // Merge and write Week start dates in Row 1 & Week Numbers in Row 2
+    let currentWeekNum = -1;
+    let weekStartCol = -1;
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      if (d.weekNum !== currentWeekNum) {
+        if (weekStartCol !== -1) {
+          planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
+          planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, colIdx - 1);
+        }
+        currentWeekNum = d.weekNum;
+        weekStartCol = colIdx;
+        planningSheet.getRow(nextRow).getCell(colIdx).value = formatToClientDate(d.dateStr);
+        planningSheet.getRow(nextRow + 1).getCell(colIdx).value = d.weekNum;
+      }
+    });
+    if (weekStartCol !== -1) {
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+    }
+
+    // Set styling for Row 1 & Row 2 timeline cells
+    for (let c = 3; c < 3 + dates.length; c++) {
+      const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
+      const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
+
+      cellRow1.font = { bold: true, size: 9 };
+      cellRow1.alignment = { horizontal: 'center' };
+      cellRow1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow1.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+
+      cellRow2.font = { bold: true, size: 9 };
+      cellRow2.alignment = { horizontal: 'center' };
+      cellRow2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow2.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+    }
+
+    // Group the project assignments by department
+    const employeesInProject: {
+      id: string;
+      name: string;
+      designation: string;
+      department: string;
+    }[] = [];
+
+    const uniqueEmpsInProj = new Set<string>();
+    projAssignments.forEach(a => {
+      if (!uniqueEmpsInProj.has(a.employeeId)) {
+        uniqueEmpsInProj.add(a.employeeId);
+        const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', designation: 'Unknown', department: 'Unknown' };
+        employeesInProject.push({
+          id: a.employeeId,
+          name: prof.name,
+          designation: prof.designation,
+          department: prof.department
+        });
+      }
+    });
+
+    const depts = Array.from(new Set(employeesInProject.map(e => e.department)));
+    nextRow += 4;
+
+    depts.forEach(deptName => {
+      // Write Department Section Row
+      const deptRow = planningSheet.getRow(nextRow);
+      deptRow.getCell(1).value = deptName;
+      deptRow.getCell(1).font = { bold: true, color: { argb: 'FFFFFF' }, size: 10 };
+      
+      deptRow.height = 20;
+      for (let col = 1; col < 3 + dates.length; col++) {
+        const cell = deptRow.getCell(col);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Dark Blue
+      }
+      planningSheet.mergeCells(nextRow, 1, nextRow, 3 + dates.length - 1);
+      nextRow++;
+
+      // Write Employees rows
+      const deptEmployees = employeesInProject.filter(e => e.department === deptName);
+      deptEmployees.forEach(emp => {
+        const empRow = planningSheet.getRow(nextRow);
+        empRow.getCell(1).value = emp.name;
+        empRow.getCell(2).value = emp.designation;
+
+        dates.forEach((d, dIdx) => {
+          const colIdx = 3 + dIdx;
+          const cell = empRow.getCell(colIdx);
+          
+          let cellStatus = '';
+          const globalStatus = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+          
+          if (globalStatus === 'L') {
+            cellStatus = 'L';
+          } else {
+            // Only output assignment status (W or T) if assigned to this project on this date
+            const hasAssign = assignments.some(a => 
+              a.employeeId === emp.id && 
+              a.projectName === project.name &&
+              (!a.travelStartDate || d.dateStr >= a.travelStartDate) &&
+              (!a.travelEndDate || d.dateStr <= a.travelEndDate)
+            );
+            if (hasAssign) {
+              cellStatus = globalStatus === 'T' ? 'T' : 'W';
+            }
+          }
+
+          cell.value = cellStatus;
+          cell.alignment = { horizontal: 'center' };
+          
+          const fill = getStatusFill(cellStatus);
+          if (fill) {
+            cell.fill = fill as any;
+            cell.font = { bold: true, color: { argb: getStatusFontColor(cellStatus) } };
+          }
+          cell.border = {
+            bottom: { style: 'thin', color: { argb: 'E2E8F0' } },
+            right: { style: 'thin', color: { argb: 'E2E8F0' } }
+          };
+        });
+        nextRow++;
+      });
+    });
+  });
+
+  // Render Standby block at the bottom
+  const standbyOnlyEmployees = profiles.filter(p => {
+    return !assignments.some(a => a.employeeId === p.id);
+  });
+
+  if (standbyOnlyEmployees.length > 0) {
+    if (nextRow > 1) {
+      nextRow += 2;
+    }
+
+    const r1 = planningSheet.getRow(nextRow);
+    r1.getCell(1).value = 'STANDBY / UNALLOCATED STAFF';
+    r1.getCell(1).font = { bold: true, color: { argb: 'EF4444' } }; // Red font
+
+    const r4 = planningSheet.getRow(nextRow + 3);
+    r4.getCell(1).value = 'Name';
+    r4.getCell(1).font = { bold: true };
+    r4.getCell(2).value = 'Designation';
+    r4.getCell(2).font = { bold: true };
+
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
+      dayCell.value = parseInt(d.dayNum, 10);
+      dayCell.alignment = { horizontal: 'center' };
+      dayCell.font = { size: 9, bold: true };
+      
+      if (d.isWeekend) {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D1FAE5' } };
+      } else {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      }
+      dayCell.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+
+      if (colIdx > 5) {
+        const cell4 = r4.getCell(colIdx);
+        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+        cell4.border = {
+          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+          right: { style: 'thin', color: { argb: 'CBD5E1' } }
+        };
+      }
+    });
+
+    let currentWeekNum = -1;
+    let weekStartCol = -1;
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      if (d.weekNum !== currentWeekNum) {
+        if (weekStartCol !== -1) {
+          planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
+          planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, colIdx - 1);
+        }
+        currentWeekNum = d.weekNum;
+        weekStartCol = colIdx;
+        planningSheet.getRow(nextRow).getCell(colIdx).value = formatToClientDate(d.dateStr);
+        planningSheet.getRow(nextRow + 1).getCell(colIdx).value = d.weekNum;
+      }
+    });
+    if (weekStartCol !== -1) {
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+    }
+
+    for (let c = 3; c < 3 + dates.length; c++) {
+      const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
+      const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
+
+      cellRow1.font = { bold: true, size: 9 };
+      cellRow1.alignment = { horizontal: 'center' };
+      cellRow1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow1.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+
+      cellRow2.font = { bold: true, size: 9 };
+      cellRow2.alignment = { horizontal: 'center' };
+      cellRow2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow2.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+    }
+
+    nextRow += 4;
+
+    standbyOnlyEmployees.forEach(emp => {
+      const empRow = planningSheet.getRow(nextRow);
+      empRow.getCell(1).value = emp.name;
+      empRow.getCell(2).value = emp.designation;
+
+      dates.forEach((d, dIdx) => {
+        const colIdx = 3 + dIdx;
+        const cell = empRow.getCell(colIdx);
+        const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+
+        cell.value = status;
+        cell.alignment = { horizontal: 'center' };
+        const fill = getStatusFill(status);
+        if (fill) {
+          cell.fill = fill as any;
+          cell.font = { bold: true, color: { argb: getStatusFontColor(status) } };
+        }
+        cell.border = {
+          bottom: { style: 'thin', color: { argb: 'E2E8F0' } },
+          right: { style: 'thin', color: { argb: 'E2E8F0' } }
+        };
+      });
+      nextRow++;
+    });
+  }
+
+  planningSheet.views = [
+    { state: 'frozen', xSplit: 2, ySplit: 0 }
+  ];
+
+
+  // ==================== SHEET 2: Summary Details ====================
+  const detailsSheet = workbook.addWorksheet('Sheet 2');
+  detailsSheet.columns = [
+    { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Department', key: 'department', width: 20 },
+    { header: 'Designation', key: 'designation', width: 20 },
+    { header: 'Project', key: 'project', width: 25 },
+    { header: 'Proj Start', key: 'projStart', width: 15 },
+    { header: 'Proj End', key: 'projEnd', width: 15 },
+    { header: 'W', key: 'w', width: 8 },
+    { header: 'L', key: 'l', width: 8 },
+    { header: 'S', key: 's', width: 8 }
+  ];
+
+  detailsSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  detailsSheet.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: '1E3A8A' } // Navy blue
+  };
+  detailsSheet.getRow(1).height = 25;
+  detailsSheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+  // Helper groupings of Employee + Project assignments (same as original rows grouping)
+  const detailRows: {
+    id: string;
+    name: string;
+    department: string;
+    designation: string;
+    project: string;
+    projectStartDate: string;
+    projectEndDate: string;
+  }[] = [];
+
+  const assignmentKeys = new Set<string>();
+  assignments.forEach(a => {
+    const key = `${a.employeeId}_${a.projectName}`;
+    if (!assignmentKeys.has(key)) {
+      assignmentKeys.add(key);
+      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
+      const proj = projects.find(p => p.name === a.projectName);
+      
+      const matchAssigns = assignments.filter(x => x.employeeId === a.employeeId && x.projectName === a.projectName);
+      const startDates = matchAssigns.map(x => x.travelStartDate || proj?.startDate || '').filter(Boolean);
+      const endDates = matchAssigns.map(x => x.travelEndDate || proj?.endDate || '').filter(Boolean);
+      
+      const minStart = startDates.length > 0 ? startDates.reduce((min, d) => d < min ? d : min, startDates[0]) : '';
+      const maxEnd = endDates.length > 0 ? endDates.reduce((max, d) => d > max ? d : max, endDates[0]) : '';
+
+      detailRows.push({
+        id: a.employeeId,
+        name: prof.name,
+        department: prof.department,
+        designation: prof.designation,
+        project: a.projectName,
+        projectStartDate: minStart,
+        projectEndDate: maxEnd
+      });
+    }
+  });
+
+  // Populate details on Sheet 2
+  detailRows.forEach((row) => {
+    // Calculate total counts for this assignment
+    let w = 0, l = 0, s = 0;
+    dates.forEach(d => {
+      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+      if (status === 'T') {
+        status = 'W';
+      }
+      // Check if project assignment matches this specific project row
+      const activeProj = getActiveProjectOnDate(row.id, d.dateStr);
+      if (activeProj === row.project) {
+        if (status === 'W') w++;
+        else if (status === 'L') l++;
+        else if (status === 'S') s++;
+      } else {
+        // If not working on this project (e.g. Leave / Standby), count it for the row if it's leave/standby
+        if (status === 'L' && row.project === '') l++;
+        else if (status === 'S' && row.project === '') s++;
+      }
+    });
+
+    const newRow = detailsSheet.addRow({
+      name: row.name,
+      department: row.department,
+      designation: row.designation,
+      project: row.project || '(No Active Project)',
+      projStart: formatToClientDate(row.projectStartDate),
+      projEnd: formatToClientDate(row.projectEndDate),
+      w,
+      l,
+      s
+    });
+
+    // Center values
+    for (let c = 5; c <= 9; c++) {
+      newRow.getCell(c).alignment = { horizontal: 'center' };
+    }
+  });
+
+  // Save Workbook
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Planning_Grid_${startDate}_to_${endDate}.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+// 4. Export Attendance Grid (With custom interval and only W, L, T, S)
+export async function exportAttendanceToExcel(
+  assignments: ProjectAssignment[],
+  profiles: EmployeeProfile[],
+  projects: ProjectDetails[],
+  leaves: LeaveRecord[],
+  startDate: string,
+  endDate: string
 ) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Attendance');
 
-  const totalCols = 11 + dates.length;
+  const dates = getDatesForInterval(startDate, endDate);
+  const totalCols = 9 + dates.length; // 4 info columns, 5 summary columns (W, L, T, S, %)
+
   const getColLetter = (colIndex: number) => {
     let letter = '';
     let temp = colIndex;
@@ -576,7 +850,7 @@ export async function exportAttendanceToExcel(
 
   sheet.mergeCells(`A1:${lastColLetter}1`);
   const titleCell = sheet.getCell('A1');
-  titleCell.value = `Attendance Report (Month: ${displayMonthName})`;
+  titleCell.value = `Attendance Report (Period: ${formatToClientDate(startDate)} to ${formatToClientDate(endDate)})`;
   titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
   titleCell.fill = {
     type: 'pattern',
@@ -592,13 +866,11 @@ export async function exportAttendanceToExcel(
     'Employee ID',
     'Employee Name',
     'Department',
-    'Function',
+    'Designation',
     'W',
-    'T',
     'L',
-    'A',
-    'H',
-    'HD',
+    'T',
+    'S',
     '%'
   ];
   const dateHeaders = dates.map(d => `${d.dayNum}\n${d.dayLabel[0]}`);
@@ -617,59 +889,35 @@ export async function exportAttendanceToExcel(
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   }
 
-  const statusCounts = dates.map(() => ({ W: 0, T: 0, L: 0, A: 0, H: 0, HD: 0 }));
+  const statusCounts = dates.map(() => ({ W: 0, T: 0, L: 0, S: 0 }));
 
   profiles.forEach((prof) => {
-    let w = 0, l = 0, t = 0, a = 0, h = 0, hd = 0;
+    let w = 0, l = 0, t = 0, s = 0;
     const dailyStatusVals: string[] = [];
 
     dates.forEach((d, dIdx) => {
-      const planStatus = (() => {
-        const empAssignments = employees.filter(e => e.id === prof.id);
-        for (const assign of empAssignments) {
-          if (!assign.travelStartDate || !assign.travelEndDate) continue;
-          const start = new Date(assign.travelStartDate);
-          const end = new Date(assign.travelEndDate);
-          const current = new Date(d.dateStr);
-          if (current >= start && current <= end) {
-            if (assign.status === 'Leave') return 'L';
-            if (assign.status === 'Travelling') return 'T';
-            if (assign.status === 'Working') {
-              if (d.dateStr === assign.travelStartDate || d.dateStr === assign.travelEndDate) {
-                return 'T';
-              }
-              return 'W';
-            }
-          }
-        }
-        return '';
-      })();
-      const status = attendance[`${prof.id}_${d.dateStr}`] || planStatus || '';
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves) || '';
       dailyStatusVals.push(status);
 
       if (status === 'W') { w++; statusCounts[dIdx].W++; }
       else if (status === 'L') { l++; statusCounts[dIdx].L++; }
       else if (status === 'T') { t++; statusCounts[dIdx].T++; }
-      else if (status === 'A') { a++; statusCounts[dIdx].A++; }
-      else if (status === 'H') { h++; statusCounts[dIdx].H++; }
-      else if (status === 'HD') { hd++; statusCounts[dIdx].HD++; }
+      else if (status === 'S') { s++; statusCounts[dIdx].S++; }
     });
 
-    const activeDays = w + t + hd * 0.5;
-    const totalScheduled = w + t + l + a + hd + h;
+    const activeDays = w + t;
+    const totalScheduled = w + t + l + s;
     const rate = totalScheduled > 0 ? Math.round((activeDays / totalScheduled) * 100) : 100;
 
     sheet.addRow([
       prof.id,
       prof.name,
       prof.department,
-      prof.function,
+      prof.designation,
       w,
-      t,
       l,
-      a,
-      h,
-      hd,
+      t,
+      s,
       `${rate}%`,
       ...dailyStatusVals
     ]);
@@ -678,13 +926,11 @@ export async function exportAttendanceToExcel(
   // Add summary rows at the bottom
   sheet.addRow([]);
 
-  const summaryKeys: { key: 'W' | 'T' | 'L' | 'A' | 'H' | 'HD'; label: string }[] = [
+  const summaryKeys: { key: 'W' | 'T' | 'L' | 'S'; label: string }[] = [
     { key: 'W', label: 'Total Working (W)' },
-    { key: 'T', label: 'Total Travel (T)' },
     { key: 'L', label: 'Total Leave (L)' },
-    { key: 'A', label: 'Total Absent (A)' },
-    { key: 'H', label: 'Total Holiday (H)' },
-    { key: 'HD', label: 'Total Half Day (HD)' }
+    { key: 'T', label: 'Total Travel (T)' },
+    { key: 'S', label: 'Total Standby (S)' }
   ];
 
   summaryKeys.forEach(({ key, label }) => {
@@ -694,11 +940,9 @@ export async function exportAttendanceToExcel(
       '', // Department
       '', // Function
       '', // W
-      '', // T
       '', // L
-      '', // A
-      '', // H
-      '', // HD
+      '', // T
+      '', // S
       '', // %
       ...statusCounts.map(c => c[key] || 0)
     ];
@@ -706,10 +950,10 @@ export async function exportAttendanceToExcel(
     row.font = { bold: true, size: 9 };
     row.getCell(1).alignment = { horizontal: 'left' };
     
-    // Merge first 11 columns for the label to look cleaner
-    sheet.mergeCells(row.number, 1, row.number, 11);
+    // Merge first 9 columns for the label to look cleaner
+    sheet.mergeCells(row.number, 1, row.number, 9);
     
-    for (let c = 12; c <= totalCols; c++) {
+    for (let c = 10; c <= totalCols; c++) {
       const cell = row.getCell(c);
       cell.alignment = { horizontal: 'center' };
       cell.fill = {
@@ -732,56 +976,110 @@ export async function exportAttendanceToExcel(
   sheet.getColumn(6).width = 6;
   sheet.getColumn(7).width = 6;
   sheet.getColumn(8).width = 6;
-  sheet.getColumn(9).width = 6;
-  sheet.getColumn(10).width = 6;
-  sheet.getColumn(11).width = 8;
+  sheet.getColumn(9).width = 8;
   
-  for (let c = 12; c <= totalCols; c++) {
+  for (let c = 10; c <= totalCols; c++) {
     sheet.getColumn(c).width = 5;
   }
 
   for (let r = 4; r <= profiles.length + 3; r++) {
     const row = sheet.getRow(r);
     row.height = 22;
+    const prof = profiles[r - 4];
+
     for (let c = 1; c <= totalCols; c++) {
       const cell = row.getCell(c);
       cell.alignment = { vertical: 'middle', horizontal: c <= 4 ? 'left' : 'center' };
       
-      if (c >= 12) {
+      if (c >= 10) {
         const val = cell.value?.toString();
         if (val === 'W') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'DBEAFE' } };
-          cell.font = { color: { argb: '1E40AF' }, bold: true, size: 9 };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'DCE6F1' } };
+          cell.font = { color: { argb: '000000' }, bold: true, size: 9 };
         } else if (val === 'T') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F3E8FF' } };
-          cell.font = { color: { argb: '6B21A8' }, bold: true, size: 9 };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '7C3AED' } };
+          cell.font = { color: { argb: 'FFFFFF' }, bold: true, size: 9 };
         } else if (val === 'L') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F4F4F5' } };
-          cell.font = { color: { argb: '71717A' }, bold: true, size: 9 };
-        } else if (val === 'A') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FEE2E2' } };
-          cell.font = { color: { argb: '991B1B' }, bold: true, size: 9 };
-        } else if (val === 'H') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D1FAE5' } };
-          cell.font = { color: { argb: '065F46' }, bold: true, size: 9 };
-        } else if (val === 'HD') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FEF3C7' } };
-          cell.font = { color: { argb: '92400E' }, bold: true, size: 9 };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F3E8FF' } };
+          cell.font = { color: { argb: '000000' }, bold: true, size: 9 };
+          
+          if (prof) {
+            const dateObj = dates[c - 10];
+            const lRecord = leaves.find(l => 
+              l.employeeId === prof.id &&
+              l.status === 'Approved' &&
+              dateObj.dateStr >= l.fromDate &&
+              dateObj.dateStr <= l.toDate
+            );
+            if (lRecord) {
+              cell.note = `Leave Type: ${lRecord.leaveType}\nProject: ${lRecord.projectName || 'None'}\nRemarks: ${lRecord.remarks || 'None'}`;
+            }
+          }
+        } else if (val === 'S') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDD5' } };
+          cell.font = { color: { argb: 'C2410C' }, bold: true, size: 9 };
         }
       }
     }
   }
+
+  // ==================== SHEET 2: Leave Details ====================
+  const leaveSheet = workbook.addWorksheet('Leave Details');
+  leaveSheet.columns = [
+    { header: 'Employee ID', key: 'employeeId', width: 15 },
+    { header: 'Employee Name', key: 'employeeName', width: 25 },
+    { header: 'Project Name', key: 'projectName', width: 25 },
+    { header: 'Leave From', key: 'fromDate', width: 15 },
+    { header: 'Leave To', key: 'toDate', width: 15 },
+    { header: 'Leave Type', key: 'leaveType', width: 15 },
+    { header: 'Remarks', key: 'remarks', width: 30 },
+    { header: 'Status', key: 'status', width: 15 }
+  ];
+
+  leaveSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  leaveSheet.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: '4F46E5' } // Indigo
+  };
+  leaveSheet.getRow(1).height = 25;
+  leaveSheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+  // Filter leaves that overlap with the selected range
+  const rangeStart = safeParseDate(startDate);
+  const rangeEnd = safeParseDate(endDate);
+
+  const activeLeaves = leaves.filter(l => {
+    const lFrom = safeParseDate(l.fromDate);
+    const lTo = safeParseDate(l.toDate);
+    if (isNaN(lFrom.getTime()) || isNaN(lTo.getTime())) return false;
+    return !(lTo < rangeStart || lFrom > rangeEnd);
+  });
+
+  activeLeaves.forEach(l => {
+    leaveSheet.addRow({
+      employeeId: l.employeeId,
+      employeeName: l.employeeName,
+      projectName: l.projectName || 'None',
+      fromDate: formatToClientDate(l.fromDate),
+      toDate: formatToClientDate(l.toDate),
+      leaveType: l.leaveType,
+      remarks: l.remarks || '',
+      status: l.status
+    });
+  });
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Attendance_Report_${monthStr}.xlsx`;
+  a.download = `Attendance_Report_${startDate}_to_${endDate}.xlsx`;
   a.click();
   window.URL.revokeObjectURL(url);
 }
 
+// 5. Excel JS Import Parsers (Project Database)
 export async function importProjectsFromExcel(file: File): Promise<ProjectDetails[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -846,6 +1144,7 @@ export async function importProjectsFromExcel(file: File): Promise<ProjectDetail
   });
 }
 
+// 6. Excel JS Import Parsers (Employees Database)
 export async function importEmployeesFromExcel(file: File): Promise<EmployeeProfile[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -870,13 +1169,13 @@ export async function importEmployeesFromExcel(file: File): Promise<EmployeeProf
           if (val.includes('id') || val.includes('employee id')) colIndices.id = colNum;
           else if (val.includes('name') || val.includes('employee name')) colIndices.name = colNum;
           else if (val.includes('dept') || val.includes('department')) colIndices.department = colNum;
-          else if (val.includes('func') || val.includes('role') || val.includes('function')) colIndices.function = colNum;
+          else if (val.includes('func') || val.includes('role') || val.includes('function') || val.includes('designation')) colIndices.designation = colNum;
         });
 
         const idCol = colIndices.id || 1;
         const nameCol = colIndices.name || 2;
         const deptCol = colIndices.department || 3;
-        const funcCol = colIndices.function || 4;
+        const funcCol = colIndices.designation || 4;
 
         sheet.eachRow((row, rowNumber) => {
           if (rowNumber === 1) return; // Skip header
@@ -889,7 +1188,7 @@ export async function importEmployeesFromExcel(file: File): Promise<EmployeeProf
             id: idVal.toUpperCase(),
             name: nameVal,
             department: row.getCell(deptCol).value?.toString().trim() || 'Operations',
-            function: row.getCell(funcCol).value?.toString().trim() || 'Staff'
+            designation: row.getCell(funcCol).value?.toString().trim() || 'Staff'
           });
         });
 
@@ -903,10 +1202,24 @@ export async function importEmployeesFromExcel(file: File): Promise<EmployeeProf
   });
 }
 
-export async function downloadExcelTemplate(headers: string[], filename: string) {
+// 7. Download template file
+export async function downloadExcelTemplate() {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Template');
-  
+  const headers = [
+    'Employee ID',
+    'Employee Name',
+    'Department',
+    'Designation',
+    'Project',
+    'Budget Code',
+    'Project Start Date',
+    'Project End Date',
+    'Start Date',
+    'End Date',
+    'Status',
+    'Remarks'
+  ];
   sheet.addRow(headers);
   
   const headerRow = sheet.getRow(1);
@@ -928,57 +1241,186 @@ export async function downloadExcelTemplate(headers: string[], filename: string)
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = `Staff_Planning_Import_Template.xlsx`;
   a.click();
   window.URL.revokeObjectURL(url);
 }
 
-export async function exportPlanningGridToExcel(
-  employees: Employee[],
-  manualLeaves: ManualLeave[],
-  startDate: string,
-  endDate: string
+// Legacy importFromExcel parser
+export async function importFromExcel(file: File): Promise<Employee[]> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const buffer = e.target?.result as ArrayBuffer;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
+
+        let sheet = workbook.worksheets.find(w => w.name.toLowerCase().includes('master') || w.name.toLowerCase().includes('assignment'));
+        if (!sheet) {
+          sheet = workbook.worksheets[0];
+        }
+
+        if (!sheet) {
+          reject(new Error("No sheet found in Excel workbook"));
+          return;
+        }
+
+        const employees: Employee[] = [];
+        const headerRow = sheet.getRow(1);
+        const colIndices: { [key: string]: number } = {};
+        
+        headerRow.eachCell((cell, colNumber) => {
+          const value = cell.value?.toString().toLowerCase().trim() || '';
+          if (value.includes('id') || value.includes('employee id')) colIndices.id = colNumber;
+          else if (value.includes('name')) colIndices.name = colNumber;
+          else if (value.includes('dept') || value.includes('department')) colIndices.department = colNumber;
+          else if (value.includes('func') || value.includes('role') || value.includes('function') || value.includes('designation')) colIndices.designation = colNumber;
+          else if (value.includes('project') && !value.includes('start') && !value.includes('end')) colIndices.project = colNumber;
+          else if (value.includes('budget')) colIndices.budgetCode = colNumber;
+          else if (value.includes('project') && value.includes('start')) colIndices.projectStartDate = colNumber;
+          else if (value.includes('project') && value.includes('end')) colIndices.projectEndDate = colNumber;
+          else if (value.includes('start')) colIndices.travelStartDate = colNumber;
+          else if (value.includes('end')) colIndices.travelEndDate = colNumber;
+          else if (value.includes('status')) colIndices.status = colNumber;
+          else if (value.includes('remark')) colIndices.remarks = colNumber;
+        });
+
+        const idCol = colIndices.id || 1;
+        const nameCol = colIndices.name || 2;
+        const deptCol = colIndices.department || 3;
+        const funcCol = colIndices.designation || 4;
+        const projCol = colIndices.project || 5;
+        const budgetCol = colIndices.budgetCode || 6;
+        const startCol = colIndices.projectStartDate || 7;
+        const endCol = colIndices.projectEndDate || 8;
+        const travelStartCol = colIndices.travelStartDate || 9;
+        const travelEndCol = colIndices.travelEndDate || 10;
+        const statusCol = colIndices.status || 11;
+        const remarkCol = colIndices.remarks || 12;
+
+        sheet.eachRow((row, rowNumber) => {
+          if (rowNumber === 1) return; // Skip header
+
+          const idVal = row.getCell(idCol).value?.toString().trim();
+          const nameVal = row.getCell(nameCol).value?.toString().trim();
+          if (!idVal || !nameVal) return;
+
+          const getVal = (col: number) => {
+            const v = row.getCell(col).value;
+            if (v instanceof Date) {
+              return v.toISOString().split('T')[0];
+            }
+            if (v && typeof v === 'object' && 'result' in v) {
+              return v.result?.toString() || '';
+            }
+            return v?.toString().trim() || '';
+          };
+
+          const parseDate = (val: string) => {
+            if (!val) return '';
+            try {
+              const d = safeParseDate(val);
+              if (isNaN(d.getTime())) return val;
+              return format(d, 'yyyy-MM-dd');
+            } catch {
+              return val;
+            }
+          };
+
+          const projStart = parseDate(getVal(startCol));
+          const projEnd = parseDate(getVal(endCol));
+          const travelStart = parseDate(getVal(travelStartCol)) || projStart;
+          const travelEnd = parseDate(getVal(travelEndCol)) || projEnd;
+          
+          let statusVal = getVal(statusCol);
+          if (!['Working', 'Leave', 'Travelling'].includes(statusVal)) {
+            statusVal = 'Working';
+          }
+
+          employees.push({
+            id: idVal,
+            name: nameVal,
+            department: getVal(deptCol) || 'Operations',
+            designation: getVal(funcCol) || 'Staff',
+            project: getVal(projCol) || 'Internal',
+            budgetCode: getVal(budgetCol) || 'BC-GENERAL',
+            projectStartDate: projStart || format(new Date(), 'yyyy-MM-dd'),
+            projectEndDate: projEnd || format(new Date(), 'yyyy-MM-dd'),
+            travelStartDate: travelStart,
+            travelEndDate: travelEnd,
+            status: statusVal as any,
+            remarks: getVal(remarkCol) || ''
+          });
+        });
+
+        resolve(employees);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error("FileReader error"));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+export async function exportToExcel(
+  profiles: EmployeeProfile[],
+  projects: ProjectDetails[],
+  assignments: ProjectAssignment[],
+  leaves: LeaveRecord[],
+  currentMonth: string // YYYY-MM
 ) {
   const workbook = new ExcelJS.Workbook();
-  const planningSheet = workbook.addWorksheet('Planning Grid');
-  
-  const dates = getDatesForInterval(startDate, endDate);
-  const timelineStartCol = 12; // Columns 1-6: details, 7-11: summary counts (W, T, L, H, A)
+  const dates = getDatesForInterval(`${currentMonth}-01`, `${currentMonth}-31`); // Fallback helper
 
+  // Tab 1: Staff Assignments
+  const assignSheet = workbook.addWorksheet('Staff Assignments');
+  assignSheet.columns = [
+    { header: 'Employee ID', key: 'employeeId', width: 15 },
+    { header: 'Project Name', key: 'projectName', width: 25 },
+    { header: 'Start Date', key: 'travelStartDate', width: 18 },
+    { header: 'End Date', key: 'travelEndDate', width: 18 },
+    { header: 'Status', key: 'status', width: 15 },
+    { header: 'Remarks', key: 'remarks', width: 30 }
+  ];
+  assignSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  assignSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
+
+  assignments.forEach(a => {
+    assignSheet.addRow({
+      employeeId: a.employeeId,
+      projectName: a.projectName,
+      travelStartDate: formatToClientDate(a.travelStartDate),
+      travelEndDate: formatToClientDate(a.travelEndDate),
+      status: a.status,
+      remarks: a.remarks
+    });
+  });
+
+  // Tab 2: Planning Grid
+  const planningSheet = workbook.addWorksheet('Planning Grid');
+  const timelineStartCol = 10;
   const rowMonth = planningSheet.getRow(1);
   const rowWeek = planningSheet.getRow(2);
   const rowDay = planningSheet.getRow(3);
   const rowDate = planningSheet.getRow(4);
 
-  // Write static headers
-  const staticHeaders = ['Employee Name', 'Department', 'Function', 'Project', 'Travel Start', 'Travel End', 'W', 'T', 'L', 'H', 'A'];
+  const staticHeaders = ['Employee Name', 'Department', 'Designation', 'Project', 'Proj Start', 'Proj End', 'W', 'L', 'S'];
   staticHeaders.forEach((h, idx) => {
     const cell = planningSheet.getCell(1, idx + 1);
     cell.value = h;
     cell.font = { bold: true, color: { argb: 'FFFFFF' } };
-    cell.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: '4F46E5' } // Indigo
-    };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     planningSheet.mergeCells(1, idx + 1, 4, idx + 1);
   });
 
-  // Write timeline headers
   dates.forEach((d, idx) => {
     const colIdx = timelineStartCol + idx;
-    
-    // Month
     rowMonth.getCell(colIdx).value = d.monthLabel;
-    
-    // Week
     rowWeek.getCell(colIdx).value = `Wk ${d.weekNum}`;
-    
-    // Day Label
     rowDay.getCell(colIdx).value = d.dayLabel;
-    
-    // Date Num
     rowDate.getCell(colIdx).value = parseInt(d.dayNum, 10);
   });
 
@@ -1011,11 +1453,7 @@ export async function exportPlanningGridToExcel(
     row.font = { bold: true, size: 9 };
     for (let c = timelineStartCol; c < timelineStartCol + dates.length; c++) {
       const cell = row.getCell(c);
-      cell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'F1F5F9' } // Slate-100
-      };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F1F5F9' } };
       cell.border = {
         bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
         right: { style: 'thin', color: { argb: 'CBD5E1' } }
@@ -1023,56 +1461,81 @@ export async function exportPlanningGridToExcel(
     }
   }
 
-  // Set widths
   for (let i = 0; i < dates.length; i++) {
     planningSheet.getColumn(timelineStartCol + i).width = 4.5;
   }
   for (let i = 1; i <= 6; i++) {
     planningSheet.getColumn(i).width = 18;
   }
-  for (let i = 7; i <= 11; i++) {
+  for (let i = 7; i <= 9; i++) {
     planningSheet.getColumn(i).width = 6;
   }
 
-  // Write data rows
-  employees.forEach((emp, empIdx) => {
-    const rowIdx = 5 + empIdx;
-    const row = planningSheet.getRow(rowIdx);
-    
-    row.getCell(1).value = emp.name;
-    row.getCell(2).value = emp.department;
-    row.getCell(3).value = emp.function;
-    row.getCell(4).value = emp.project;
-    row.getCell(5).value = emp.travelStartDate || emp.projectStartDate;
-    row.getCell(6).value = emp.travelEndDate || emp.projectEndDate;
+  // Group rows
+  const groupedRows: {
+    id: string;
+    name: string;
+    department: string;
+    designation: string;
+    project: string;
+    projectStartDate: string;
+    projectEndDate: string;
+  }[] = [];
 
-    // Calculate total counts for this employee
-    let w = 0, t = 0, l = 0, h = 0, a = 0;
+  const uniqueKeys = new Set<string>();
+  assignments.forEach(a => {
+    const key = `${a.employeeId}_${a.projectName}`;
+    if (!uniqueKeys.has(key)) {
+      uniqueKeys.add(key);
+      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
+      const proj = projects.find(p => p.name === a.projectName);
+      const matchAssigns = assignments.filter(x => x.employeeId === a.employeeId && x.projectName === a.projectName);
+      const startDates = matchAssigns.map(x => x.travelStartDate || proj?.startDate || '').filter(Boolean);
+      const endDates = matchAssigns.map(x => x.travelEndDate || proj?.endDate || '').filter(Boolean);
+      
+      const minStart = startDates.length > 0 ? startDates.reduce((min, d) => d < min ? d : min, startDates[0]) : '';
+      const maxEnd = endDates.length > 0 ? endDates.reduce((max, d) => d > max ? d : max, endDates[0]) : '';
+
+      groupedRows.push({
+        id: a.employeeId,
+        name: prof.name,
+        department: prof.department,
+        designation: prof.designation,
+        project: a.projectName,
+        projectStartDate: minStart,
+        projectEndDate: maxEnd
+      });
+    }
+  });
+
+  groupedRows.forEach((row, idx) => {
+    const rowIdx = 5 + idx;
+    const excelRow = planningSheet.getRow(rowIdx);
+    excelRow.getCell(1).value = row.name;
+    excelRow.getCell(2).value = row.department;
+    excelRow.getCell(3).value = row.designation;
+    excelRow.getCell(4).value = row.project;
+    excelRow.getCell(5).value = formatToClientDate(row.projectStartDate);
+    excelRow.getCell(6).value = formatToClientDate(row.projectEndDate);
+
+    let w = 0, l = 0, s = 0;
     dates.forEach(d => {
-      const status: string = getCellStatus(emp, d.dateStr, manualLeaves);
+      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+      if (status === 'T') status = 'W';
       if (status === 'W') w++;
-      else if (status === 'T') t++;
       else if (status === 'L') l++;
-      else if (status === 'H') h++;
-      else if (status === 'A') a++;
+      else if (status === 'S') s++;
     });
 
-    row.getCell(7).value = w;
-    row.getCell(8).value = t;
-    row.getCell(9).value = l;
-    row.getCell(10).value = h;
-    row.getCell(11).value = a;
+    excelRow.getCell(7).value = w;
+    excelRow.getCell(8).value = l;
+    excelRow.getCell(9).value = s;
 
-    // Style summary counter columns
-    for (let c = 7; c <= 11; c++) {
-      const cell = row.getCell(c);
+    for (let c = 7; c <= 9; c++) {
+      const cell = excelRow.getCell(c);
       cell.font = { bold: true, size: 9 };
       cell.alignment = { horizontal: 'center' };
-      cell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'F8FAFC' } // Slate-50
-      };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
       cell.border = {
         bottom: { style: 'thin', color: { argb: 'E2E8F0' } },
         right: { style: 'thin', color: { argb: 'E2E8F0' } }
@@ -1081,11 +1544,11 @@ export async function exportPlanningGridToExcel(
 
     dates.forEach((d, dIdx) => {
       const colIdx = timelineStartCol + dIdx;
-      const cell = row.getCell(colIdx);
-      const status: string = getCellStatus(emp, d.dateStr, manualLeaves);
+      const cell = excelRow.getCell(colIdx);
+      const status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+
       cell.value = status;
       cell.alignment = { horizontal: 'center' };
-      
       const fill = getStatusFill(status);
       if (fill) {
         cell.fill = fill as any;
@@ -1098,12 +1561,766 @@ export async function exportPlanningGridToExcel(
     });
   });
 
+  // Tab 3: Attendance Sheet
+  const attSheet = workbook.addWorksheet('Attendance Sheet');
+  const attStaticCols = ['Employee Name', 'Department', 'Designation', 'Project'];
+  attStaticCols.forEach((h, idx) => {
+    attSheet.getCell(3, idx + 1).value = h;
+    attSheet.getCell(3, idx + 1).font = { bold: true };
+    attSheet.mergeCells(1, idx + 1, 3, idx + 1);
+  });
+
+  dates.forEach((d, idx) => {
+    const colIdx = 5 + idx;
+    attSheet.getCell(1, colIdx).value = d.monthLabel;
+    attSheet.getCell(2, colIdx).value = d.dayLabel;
+    attSheet.getCell(3, colIdx).value = parseInt(d.dayNum, 10);
+  });
+
+  let attMonthStart = 5;
+  for (let i = 1; i <= dates.length; i++) {
+    if (i === dates.length || dates[i].monthLabel !== dates[i - 1].monthLabel) {
+      if (attMonthStart < 5 + i - 1) {
+        attSheet.mergeCells(1, attMonthStart, 1, 5 + i - 1);
+      }
+      attMonthStart = 5 + i;
+    }
+  }
+
+  for (let r = 1; r <= 3; r++) {
+    const row = attSheet.getRow(r);
+    row.alignment = { vertical: 'middle', horizontal: 'center' };
+    row.font = { bold: true, size: 9 };
+  }
+
+  for (let i = 0; i < dates.length; i++) {
+    attSheet.getColumn(5 + i).width = 4.5;
+  }
+  for (let i = 1; i <= 4; i++) {
+    attSheet.getColumn(i).width = 18;
+  }
+
+  profiles.forEach((prof, empIdx) => {
+    const rowIdx = 4 + empIdx;
+    const row = attSheet.getRow(rowIdx);
+    row.getCell(1).value = prof.name;
+    row.getCell(2).value = prof.department;
+    row.getCell(3).value = prof.designation;
+
+    const empAssignments = assignments.filter(a => a.employeeId === prof.id);
+    const activeAss = empAssignments.find(a => {
+      const foundProj = projects.find(p => p.name === a.projectName);
+      const sStr = a.travelStartDate || foundProj?.startDate || '';
+      const eStr = a.travelEndDate || foundProj?.endDate || '';
+      const mid = dates[Math.floor(dates.length / 2)]?.dateStr || '';
+      return mid >= sStr && mid <= eStr;
+    }) || empAssignments[0];
+    row.getCell(4).value = activeAss?.projectName || 'Unassigned';
+
+    dates.forEach((d, dIdx) => {
+      const colIdx = 5 + dIdx;
+      const cell = row.getCell(colIdx);
+      const attStatus = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves) || '';
+      
+      cell.value = attStatus;
+      cell.alignment = { horizontal: 'center' };
+      const fill = getStatusFill(attStatus);
+      if (fill) {
+        cell.fill = fill as any;
+        cell.font = { bold: true, color: { argb: getStatusFontColor(attStatus) }, size: 9 };
+      }
+    });
+  });
+
+  // Tab 4: Summary Report
+  const summarySheet = workbook.addWorksheet('Summary Report');
+  summarySheet.columns = [
+    { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Department', key: 'department', width: 20 },
+    { header: 'Designation', key: 'designation', width: 20 },
+    { header: 'Working Days', key: 'working', width: 15 },
+    { header: 'Leave Days', key: 'leave', width: 15 },
+    { header: 'Travel Days', key: 'travel', width: 15 },
+    { header: 'Standby Days', key: 'standby', width: 15 },
+    { header: 'Attendance %', key: 'attendanceRate', width: 18 }
+  ];
+
+  summarySheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  summarySheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0F172A' } };
+
+  profiles.forEach(prof => {
+    let working = 0, leave = 0, travel = 0, standby = 0;
+    dates.forEach(d => {
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves);
+      if (status === 'W') working++;
+      else if (status === 'L') leave++;
+      else if (status === 'T') travel++;
+      else if (status === 'S') standby++;
+    });
+
+    const activeDays = working + travel;
+    const totalScheduled = working + travel + leave + standby;
+    const rate = totalScheduled > 0 ? (activeDays / totalScheduled) * 100 : 100;
+
+    summarySheet.addRow({
+      name: prof.name,
+      department: prof.department,
+      designation: prof.designation,
+      working,
+      leave,
+      travel,
+      standby,
+      attendanceRate: `${rate.toFixed(1)}%`
+    });
+  });
+
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Planning_Grid_${startDate}_to_${endDate}.xlsx`;
+  a.download = `Staff_Planning_Report_${currentMonth}.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function exportConsolidatedReportToExcel(
+  assignments: ProjectAssignment[],
+  profiles: EmployeeProfile[],
+  projects: ProjectDetails[],
+  leaves: LeaveRecord[],
+  startDate: string,
+  endDate: string
+) {
+  const workbook = new ExcelJS.Workbook();
+  const dates = getDatesForInterval(startDate, endDate);
+
+  // ==================== TAB 1: Master Sheet ====================
+  const masterSheet = workbook.addWorksheet('Master Sheet');
+  masterSheet.getColumn(1).width = 25; // Department
+  masterSheet.getColumn(2).width = 15; // Employee ID
+  masterSheet.getColumn(3).width = 30; // Name
+  masterSheet.getColumn(4).width = 25; // Function / Designation
+
+  masterSheet.mergeCells('A1:D1');
+  const mTitle1 = masterSheet.getCell('A1');
+  mTitle1.value = 'Project STAFF working schedule';
+  mTitle1.font = { bold: true, size: 12 };
+  mTitle1.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  masterSheet.mergeCells('A2:D2');
+  const mTitle2 = masterSheet.getCell('A2');
+  mTitle2.value = 'Maitenance Dredging at kakinada Deep water Port year 2025_07/Sep/25';
+  mTitle2.font = { bold: true, size: 10, italic: true };
+  mTitle2.alignment = { horizontal: 'center', vertical: 'middle' };
+
+  masterSheet.getCell('A4').value = 'Department';
+  masterSheet.getCell('B4').value = 'Employee ID';
+  masterSheet.getCell('C4').value = 'Name';
+  masterSheet.getCell('D4').value = 'Function';
+  for (let c = 1; c <= 4; c++) {
+    masterSheet.getCell(4, c).font = { bold: true };
+    masterSheet.getCell(4, c).alignment = { vertical: 'middle' };
+  }
+
+  projects.forEach((proj, idx) => {
+    const startCol = 5 + idx * 2;
+    const endCol = 6 + idx * 2;
+    masterSheet.getColumn(startCol).width = 15;
+    masterSheet.getColumn(endCol).width = 15;
+
+    masterSheet.mergeCells(1, startCol, 1, endCol);
+    const budgetLabel = masterSheet.getCell(1, startCol);
+    budgetLabel.value = 'Budget Code';
+    budgetLabel.font = { bold: true };
+    budgetLabel.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    masterSheet.mergeCells(2, startCol, 2, endCol);
+    const budgetVal = masterSheet.getCell(2, startCol);
+    budgetVal.value = proj.budgetCode || '';
+    budgetVal.font = { bold: true };
+    budgetVal.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    const startCell = masterSheet.getCell(3, startCol);
+    startCell.value = formatToClientDate(proj.startDate);
+    startCell.font = { bold: true };
+    startCell.alignment = { horizontal: 'center' };
+
+    const endCell = masterSheet.getCell(3, endCol);
+    endCell.value = formatToClientDate(proj.endDate);
+    endCell.font = { bold: true };
+    endCell.alignment = { horizontal: 'center' };
+
+    masterSheet.mergeCells(4, startCol, 4, endCol);
+    const nameCell = masterSheet.getCell(4, startCol);
+    nameCell.value = proj.name;
+    nameCell.font = { bold: true };
+    nameCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+
+  const sortedProfiles = [...profiles].sort((a, b) => {
+    const deptCompare = (a.department || '').localeCompare(b.department || '');
+    if (deptCompare !== 0) return deptCompare;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  sortedProfiles.forEach((emp, rIdx) => {
+    const rowIdx = 5 + rIdx;
+    const r = masterSheet.getRow(rowIdx);
+    r.height = 20;
+
+    r.getCell(1).value = emp.department;
+    r.getCell(2).value = emp.id;
+    r.getCell(3).value = emp.name;
+    r.getCell(4).value = emp.designation;
+
+    projects.forEach((proj, pIdx) => {
+      const startCol = 5 + pIdx * 2;
+      const endCol = 6 + pIdx * 2;
+
+      const assign = assignments.find(a => a.employeeId === emp.id && a.projectName === proj.name);
+      if (assign) {
+        r.getCell(startCol).value = formatToClientDate(assign.travelStartDate || proj.startDate);
+        r.getCell(endCol).value = formatToClientDate(assign.travelEndDate || proj.endDate);
+      } else {
+        r.getCell(startCol).value = '';
+        r.getCell(endCol).value = '';
+      }
+
+      r.getCell(startCol).alignment = { horizontal: 'center' };
+      r.getCell(endCol).alignment = { horizontal: 'center' };
+    });
+
+    for (let c = 1; c <= 4 + projects.length * 2; c++) {
+      const cell = r.getCell(c);
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+    }
+  });
+
+  for (let rowNum = 1; rowNum <= 4; rowNum++) {
+    const headerRow = masterSheet.getRow(rowNum);
+    for (let c = 1; c <= 4 + projects.length * 2; c++) {
+      const cell = headerRow.getCell(c);
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: '94A3B8' } },
+        right: { style: 'thin', color: { argb: '94A3B8' } }
+      };
+    }
+  }
+  masterSheet.views = [{ state: 'frozen', xSplit: 4, ySplit: 4 }];
+
+  // ==================== TAB 2: Planning Grid ====================
+  const planningSheet = workbook.addWorksheet('Planning Grid');
+  planningSheet.getColumn(1).width = 28; // Employee Name (A)
+  planningSheet.getColumn(2).width = 22; // Designation / Function (B)
+  for (let i = 0; i < dates.length; i++) {
+    planningSheet.getColumn(3 + i).width = 4.5;
+  }
+
+  let nextRow = 1;
+  projects.forEach((project, projIdx) => {
+    const projAssignments = assignments.filter(a => a.projectName === project.name);
+    if (projAssignments.length === 0) return;
+
+    if (projIdx > 0 || nextRow > 1) {
+      nextRow += 2;
+    }
+
+    const r1 = planningSheet.getRow(nextRow);
+    r1.getCell(1).value = 'BUDGET - Project Name';
+    r1.getCell(1).font = { bold: true, color: { argb: '10B981' } };
+    r1.getCell(2).value = project.name;
+    r1.getCell(2).font = { bold: true };
+
+    const r2 = planningSheet.getRow(nextRow + 1);
+    r2.getCell(2).value = project.budgetCode || '';
+    r2.getCell(2).font = { bold: true };
+    r2.getCell(2).alignment = { horizontal: 'center' };
+
+    const r4 = planningSheet.getRow(nextRow + 3);
+    r4.getCell(1).value = 'Name';
+    r4.getCell(1).font = { bold: true };
+    r4.getCell(2).value = 'Designation';
+    r4.getCell(2).font = { bold: true };
+
+    const startClientDate = formatToClientDate(project.startDate);
+    r4.getCell(3).value = startClientDate;
+    r4.getCell(3).font = { bold: true };
+    r4.getCell(3).alignment = { horizontal: 'center' };
+
+    r4.getCell(4).value = 'Project End Dat';
+    r4.getCell(4).font = { bold: true };
+    r4.getCell(4).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF00' } };
+    r4.getCell(4).alignment = { horizontal: 'center' };
+
+    const endClientDate = formatToClientDate(project.endDate);
+    r4.getCell(5).value = endClientDate;
+    r4.getCell(5).font = { bold: true };
+    r4.getCell(5).alignment = { horizontal: 'center' };
+
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
+      dayCell.value = parseInt(d.dayNum, 10);
+      dayCell.alignment = { horizontal: 'center' };
+      dayCell.font = { size: 9, bold: true };
+      
+      if (d.isWeekend) {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D1FAE5' } };
+      } else {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      }
+      dayCell.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
+
+      if (colIdx > 5) {
+        const cell4 = r4.getCell(colIdx);
+        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+        cell4.border = {
+          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+          right: { style: 'thin', color: { argb: 'CBD5E1' } }
+        };
+      }
+    });
+
+    let currentWeekNum = -1;
+    let weekStartCol = -1;
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      if (d.weekNum !== currentWeekNum) {
+        if (weekStartCol !== -1) {
+          planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
+          planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, colIdx - 1);
+        }
+        currentWeekNum = d.weekNum;
+        weekStartCol = colIdx;
+        planningSheet.getRow(nextRow).getCell(colIdx).value = formatToClientDate(d.dateStr);
+        planningSheet.getRow(nextRow + 1).getCell(colIdx).value = d.weekNum;
+      }
+    });
+    if (weekStartCol !== -1) {
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+    }
+
+    for (let c = 3; c < 3 + dates.length; c++) {
+      const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
+      const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
+      cellRow1.font = { bold: true, size: 9 };
+      cellRow1.alignment = { horizontal: 'center' };
+      cellRow1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow1.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+
+      cellRow2.font = { bold: true, size: 9 };
+      cellRow2.alignment = { horizontal: 'center' };
+      cellRow2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow2.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+    }
+
+    const employeesInProject: { id: string; name: string; designation: string; department: string; }[] = [];
+    const uniqueEmpsInProj = new Set<string>();
+    projAssignments.forEach(a => {
+      if (!uniqueEmpsInProj.has(a.employeeId)) {
+        uniqueEmpsInProj.add(a.employeeId);
+        const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', designation: 'Unknown', department: 'Unknown' };
+        employeesInProject.push({ id: a.employeeId, name: prof.name, designation: prof.designation, department: prof.department });
+      }
+    });
+
+    const groupedByDept: Record<string, typeof employeesInProject> = {};
+    employeesInProject.forEach(emp => {
+      if (!groupedByDept[emp.department]) groupedByDept[emp.department] = [];
+      groupedByDept[emp.department].push(emp);
+    });
+
+    nextRow += 4;
+    Object.keys(groupedByDept).sort().forEach(dept => {
+      const deptRow = planningSheet.getRow(nextRow);
+      deptRow.getCell(1).value = dept;
+      deptRow.getCell(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+      deptRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
+      deptRow.getCell(1).alignment = { horizontal: 'left' };
+      
+      planningSheet.mergeCells(nextRow, 1, nextRow, 3 + dates.length - 1);
+      nextRow++;
+
+      groupedByDept[dept].forEach(emp => {
+        const empRow = planningSheet.getRow(nextRow);
+        empRow.getCell(1).value = emp.name;
+        empRow.getCell(2).value = emp.designation;
+
+        dates.forEach((d, dIdx) => {
+          const colIdx = 3 + dIdx;
+          const cell = empRow.getCell(colIdx);
+          let status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+          if (status === 'T') status = 'W';
+
+          cell.value = status;
+          cell.alignment = { horizontal: 'center' };
+          const fill = getStatusFill(status);
+          if (fill) {
+            cell.fill = fill as any;
+            cell.font = { bold: true, color: { argb: getStatusFontColor(status) } };
+          }
+          cell.border = { bottom: { style: 'thin', color: { argb: 'E2E8F0' } }, right: { style: 'thin', color: { argb: 'E2E8F0' } } };
+        });
+        nextRow++;
+      });
+    });
+  });
+
+  const assignedEmpIds = new Set(assignments.map(a => a.employeeId));
+  const standbyOnlyEmployees = profiles.filter(p => !assignedEmpIds.has(p.id));
+  if (standbyOnlyEmployees.length > 0) {
+    if (nextRow > 1) nextRow += 2;
+
+    const r1 = planningSheet.getRow(nextRow);
+    r1.getCell(1).value = 'STANDBY / UNALLOCATED STAFF';
+    r1.getCell(1).font = { bold: true, color: { argb: 'F97316' } };
+
+    const r4 = planningSheet.getRow(nextRow + 3);
+    r4.getCell(1).value = 'Name';
+    r4.getCell(1).font = { bold: true };
+    r4.getCell(2).value = 'Designation';
+    r4.getCell(2).font = { bold: true };
+
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
+      dayCell.value = parseInt(d.dayNum, 10);
+      dayCell.alignment = { horizontal: 'center' };
+      dayCell.font = { size: 9, bold: true };
+      
+      if (d.isWeekend) {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'D1FAE5' } };
+      } else {
+        dayCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      }
+      dayCell.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+
+      if (colIdx > 5) {
+        const cell4 = r4.getCell(colIdx);
+        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+        cell4.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+      }
+    });
+
+    let currentWeekNum = -1;
+    let weekStartCol = -1;
+    dates.forEach((d, idx) => {
+      const colIdx = 3 + idx;
+      if (d.weekNum !== currentWeekNum) {
+        if (weekStartCol !== -1) {
+          planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
+          planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, colIdx - 1);
+        }
+        currentWeekNum = d.weekNum;
+        weekStartCol = colIdx;
+        planningSheet.getRow(nextRow).getCell(colIdx).value = formatToClientDate(d.dateStr);
+        planningSheet.getRow(nextRow + 1).getCell(colIdx).value = d.weekNum;
+      }
+    });
+    if (weekStartCol !== -1) {
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+    }
+
+    for (let c = 3; c < 3 + dates.length; c++) {
+      const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
+      const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
+      cellRow1.font = { bold: true, size: 9 };
+      cellRow1.alignment = { horizontal: 'center' };
+      cellRow1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow1.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+
+      cellRow2.font = { bold: true, size: 9 };
+      cellRow2.alignment = { horizontal: 'center' };
+      cellRow2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cellRow2.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+    }
+
+    nextRow += 4;
+    standbyOnlyEmployees.forEach(emp => {
+      const empRow = planningSheet.getRow(nextRow);
+      empRow.getCell(1).value = emp.name;
+      empRow.getCell(2).value = emp.designation;
+
+      dates.forEach((d, dIdx) => {
+        const colIdx = 3 + dIdx;
+        const cell = empRow.getCell(colIdx);
+        const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+
+        cell.value = status;
+        cell.alignment = { horizontal: 'center' };
+        const fill = getStatusFill(status);
+        if (fill) {
+          cell.fill = fill as any;
+          cell.font = { bold: true, color: { argb: getStatusFontColor(status) } };
+        }
+        cell.border = { bottom: { style: 'thin', color: { argb: 'E2E8F0' } }, right: { style: 'thin', color: { argb: 'E2E8F0' } } };
+      });
+      nextRow++;
+    });
+  }
+  planningSheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 0 }];
+
+  // ==================== TAB 3: Planning Summary ====================
+  const summarySheet = workbook.addWorksheet('Planning Summary');
+  summarySheet.columns = [
+    { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Department', key: 'department', width: 20 },
+    { header: 'Designation', key: 'designation', width: 20 },
+    { header: 'Project', key: 'project', width: 25 },
+    { header: 'Proj Start', key: 'projStart', width: 15 },
+    { header: 'Proj End', key: 'projEnd', width: 15 },
+    { header: 'W', key: 'w', width: 8 },
+    { header: 'L', key: 'l', width: 8 },
+    { header: 'S', key: 's', width: 8 }
+  ];
+
+  summarySheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  summarySheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
+  summarySheet.getRow(1).height = 25;
+  summarySheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+  const summaryRows: {
+    id: string;
+    name: string;
+    department: string;
+    designation: string;
+    project: string;
+    projectStartDate: string;
+    projectEndDate: string;
+  }[] = [];
+
+  const summaryKeysSet = new Set<string>();
+  assignments.forEach(a => {
+    const key = `${a.employeeId}_${a.projectName}`;
+    if (!summaryKeysSet.has(key)) {
+      summaryKeysSet.add(key);
+      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
+      const proj = projects.find(p => p.name === a.projectName);
+      const matchAssigns = assignments.filter(x => x.employeeId === a.employeeId && x.projectName === a.projectName);
+      const startDates = matchAssigns.map(x => x.travelStartDate || proj?.startDate || '').filter(Boolean);
+      const endDates = matchAssigns.map(x => x.travelEndDate || proj?.endDate || '').filter(Boolean);
+      const minStart = startDates.length > 0 ? startDates.reduce((min, d) => d < min ? d : min, startDates[0]) : '';
+      const maxEnd = endDates.length > 0 ? endDates.reduce((max, d) => d > max ? d : max, endDates[0]) : '';
+
+      summaryRows.push({
+        id: a.employeeId,
+        name: prof.name,
+        department: prof.department,
+        designation: prof.designation,
+        project: a.projectName,
+        projectStartDate: minStart,
+        projectEndDate: maxEnd
+      });
+    }
+  });
+
+  summaryRows.forEach((row) => {
+    let w = 0, l = 0, s = 0;
+    dates.forEach(d => {
+      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+      if (status === 'T') status = 'W';
+      if (status === 'W') w++;
+      else if (status === 'L') l++;
+      else if (status === 'S') s++;
+    });
+
+    summarySheet.addRow({
+      name: row.name,
+      department: row.department,
+      designation: row.designation,
+      project: row.project,
+      projStart: formatToClientDate(row.projectStartDate),
+      projEnd: formatToClientDate(row.projectEndDate),
+      w,
+      l,
+      s
+    });
+  });
+
+  // ==================== TAB 4: Attendance Grid ====================
+  const attGridSheet = workbook.addWorksheet('Attendance Grid');
+  const attBaseHeaders = ['Employee ID', 'Employee Name', 'Department', 'Designation', 'W', 'L', 'T', 'S', '%'];
+  const attDateHeaders = dates.map(d => `${d.dayNum}\n${d.dayLabel[0]}`);
+  
+  attGridSheet.getRow(3).values = [...attBaseHeaders, ...attDateHeaders];
+  attGridSheet.getRow(3).font = { bold: true, color: { argb: 'FFFFFF' }, size: 9 };
+  attGridSheet.getRow(3).height = 28;
+
+  attGridSheet.mergeCells('A1:I1');
+  const attTitleCell = attGridSheet.getCell('A1');
+  attTitleCell.value = 'STAFF PLANNING ATTENDANCE MATRIX';
+  attTitleCell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 14 };
+  attTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
+  attTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  attGridSheet.getRow(1).height = 40;
+
+  for (let c = 1; c <= 9 + dates.length; c++) {
+    const cell = attGridSheet.getRow(3).getCell(c);
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+  }
+
+  const attStatusCounts = dates.map(() => ({ W: 0, T: 0, L: 0, S: 0 }));
+  profiles.forEach((prof) => {
+    let w = 0, l = 0, t = 0, s = 0;
+    const dailyStatusVals: string[] = [];
+
+    dates.forEach((d, dIdx) => {
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves) || '';
+      dailyStatusVals.push(status);
+      if (status === 'W') { w++; attStatusCounts[dIdx].W++; }
+      else if (status === 'L') { l++; attStatusCounts[dIdx].L++; }
+      else if (status === 'T') { t++; attStatusCounts[dIdx].T++; }
+      else if (status === 'S') { s++; attStatusCounts[dIdx].S++; }
+    });
+
+    const activeDays = w + t;
+    const totalScheduled = w + t + l + s;
+    const rate = totalScheduled > 0 ? Math.round((activeDays / totalScheduled) * 100) : 100;
+
+    attGridSheet.addRow([
+      prof.id,
+      prof.name,
+      prof.department,
+      prof.designation,
+      w,
+      l,
+      t,
+      s,
+      `${rate}%`,
+      ...dailyStatusVals
+    ]);
+  });
+
+  const attSummaryKeys: { key: 'W' | 'T' | 'L' | 'S'; label: string }[] = [
+    { key: 'W', label: 'Total Working (W)' },
+    { key: 'L', label: 'Total Leave (L)' },
+    { key: 'T', label: 'Total Travel (T)' },
+    { key: 'S', label: 'Total Standby (S)' }
+  ];
+
+  attSummaryKeys.forEach(({ key, label }) => {
+    const rowValues = [
+      label, '', '', '', '', '', '', '', '',
+      ...attStatusCounts.map(c => c[key] || 0)
+    ];
+    const row = attGridSheet.addRow(rowValues);
+    row.font = { bold: true, size: 9 };
+    row.getCell(1).alignment = { horizontal: 'left' };
+    attGridSheet.mergeCells(row.number, 1, row.number, 9);
+  });
+
+  attGridSheet.getColumn(1).width = 15;
+  attGridSheet.getColumn(2).width = 25;
+  attGridSheet.getColumn(3).width = 20;
+  attGridSheet.getColumn(4).width = 20;
+  for (let c = 10; c <= 9 + dates.length; c++) {
+    attGridSheet.getColumn(c).width = 5;
+  }
+
+  // ==================== TAB 5: Leave Details ====================
+  const leaveDetailsSheet = workbook.addWorksheet('Leave Details');
+  leaveDetailsSheet.columns = [
+    { header: 'Employee ID', key: 'employeeId', width: 15 },
+    { header: 'Employee Name', key: 'employeeName', width: 25 },
+    { header: 'Project Name', key: 'projectName', width: 25 },
+    { header: 'Leave From', key: 'fromDate', width: 15 },
+    { header: 'Leave To', key: 'toDate', width: 15 },
+    { header: 'Leave Type', key: 'leaveType', width: 15 },
+    { header: 'Remarks', key: 'remarks', width: 30 },
+    { header: 'Status', key: 'status', width: 15 }
+  ];
+
+  leaveDetailsSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  leaveDetailsSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
+  leaveDetailsSheet.getRow(1).height = 25;
+  leaveDetailsSheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+  const lStart = safeParseDate(startDate);
+  const lEnd = safeParseDate(endDate);
+  const activeL = leaves.filter(l => {
+    const lFrom = safeParseDate(l.fromDate);
+    const lTo = safeParseDate(l.toDate);
+    if (isNaN(lFrom.getTime()) || isNaN(lTo.getTime())) return false;
+    return !(lTo < lStart || lFrom > lEnd);
+  });
+
+  activeL.forEach(l => {
+    leaveDetailsSheet.addRow({
+      employeeId: l.employeeId,
+      employeeName: l.employeeName,
+      projectName: l.projectName || 'None',
+      fromDate: formatToClientDate(l.fromDate),
+      toDate: formatToClientDate(l.toDate),
+      leaveType: l.leaveType,
+      remarks: l.remarks || '',
+      status: l.status
+    });
+  });
+
+  // Save Consolidated File
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Consolidated_Staff_Planning_Report_${startDate}_to_${endDate}.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function exportAuditLogToExcel(logs: any[]) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Change Audit Logs');
+
+  sheet.columns = [
+    { header: 'ID', key: 'id', width: 25 },
+    { header: 'Operator (Who)', key: 'who', width: 20 },
+    { header: 'Timestamp (When)', key: 'when', width: 25 },
+    { header: 'Action', key: 'actionType', width: 15 },
+    { header: 'Record Type', key: 'recordType', width: 15 },
+    { header: 'Record ID', key: 'recordId', width: 15 },
+    { header: 'Description', key: 'description', width: 45 },
+    { header: 'Old Value (JSON)', key: 'oldValue', width: 35 },
+    { header: 'New Value (JSON)', key: 'newValue', width: 35 }
+  ];
+
+  sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  sheet.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF4F46E5' }
+  };
+
+  logs.forEach(log => {
+    sheet.addRow({
+      id: log.id,
+      who: log.who,
+      when: log.when,
+      actionType: log.actionType.toUpperCase(),
+      recordType: log.recordType.toUpperCase(),
+      recordId: log.recordId,
+      description: log.description,
+      oldValue: log.oldValue ? JSON.stringify(log.oldValue) : '',
+      newValue: log.newValue ? JSON.stringify(log.newValue) : ''
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `HR_Staff_Planner_Audit_Logs_${new Date().toISOString().split('T')[0]}.xlsx`;
   a.click();
   window.URL.revokeObjectURL(url);
 }

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import type { Employee, AttendanceRecord, ManualLeave } from '../hooks/usePlanningState';
-import { getDatesForMonth, getCellStatus } from '../utils/timelineHelper';
+import type { EmployeeProfile, ProjectDetails, ProjectAssignment, LeaveRecord } from '../hooks/usePlanningState';
+import { getDatesForMonth, resolveStatusOnDate } from '../utils/timelineHelper';
 import { exportToExcel } from '../utils/excelHelper';
 import { format } from 'date-fns';
 import { 
@@ -13,12 +13,18 @@ import {
 } from 'lucide-react';
 
 interface ReportsViewProps {
-  employees: Employee[];
-  attendance: AttendanceRecord;
-  manualLeaves: ManualLeave[];
+  profiles: EmployeeProfile[];
+  projects: ProjectDetails[];
+  assignments: ProjectAssignment[];
+  leaves: LeaveRecord[];
 }
 
-export default function ReportsView({ employees, attendance, manualLeaves }: ReportsViewProps) {
+export default function ReportsView({ 
+  profiles, 
+  projects, 
+  assignments, 
+  leaves 
+}: ReportsViewProps) {
   const [reportMonth, setReportMonth] = useState('2026-05');
   const dates = getDatesForMonth(reportMonth);
 
@@ -26,38 +32,33 @@ export default function ReportsView({ employees, attendance, manualLeaves }: Rep
   const displayMonthName = format(new Date(parseInt(year), parseInt(month) - 1, 1), 'MMMM yyyy');
 
   const handleDownload = async () => {
-    await exportToExcel(employees, attendance, manualLeaves, reportMonth);
+    await exportToExcel(profiles, projects, assignments, leaves, reportMonth);
   };
 
-  // Compile summary details
+  // Compile summary details based strictly on W, L, T, S and %
   const getCompiledData = () => {
-    return employees.map(emp => {
-      let working = 0, leave = 0, travel = 0, absent = 0, holiday = 0, halfday = 0;
+    return profiles.map(prof => {
+      let working = 0, leave = 0, travel = 0, standby = 0;
       
       dates.forEach(d => {
-        const planStatus = getCellStatus(emp, d.dateStr, manualLeaves);
-        const status = attendance[`${emp.id}_${d.dateStr}`] || planStatus;
+        const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves);
         
         if (status === 'W') working++;
         else if (status === 'L') leave++;
         else if (status === 'T') travel++;
-        else if (status === 'A') absent++;
-        else if (status === 'H') holiday++;
-        else if (status === 'HD') halfday++;
+        else if (status === 'S') standby++;
       });
 
-      const activeDays = working + travel + halfday * 0.5;
-      const totalScheduled = working + travel + leave + absent + halfday + holiday;
+      const activeDays = working + travel;
+      const totalScheduled = working + travel + leave + standby;
       const rate = totalScheduled > 0 ? Math.round((activeDays / totalScheduled) * 100) : 100;
 
       return {
-        emp,
+        prof,
         working,
         leave,
         travel,
-        absent,
-        holiday,
-        halfday,
+        standby,
         rate
       };
     });
@@ -68,7 +69,7 @@ export default function ReportsView({ employees, attendance, manualLeaves }: Rep
   const reportCards = [
     {
       title: 'Attendance Summary',
-      description: 'Calculates active vs scheduled days, absent metrics, and rates.',
+      description: 'Calculates active vs scheduled days, standby metrics, and rates.',
       icon: <UserCheck className="w-5 h-5 text-emerald-500" />
     },
     {
@@ -132,7 +133,7 @@ export default function ReportsView({ employees, attendance, manualLeaves }: Rep
               className="mt-4 text-xs font-semibold text-brand-600 dark:text-brand-400 flex items-center gap-1.5 hover:underline"
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
-              Download Template (.xlsx)
+              Download Report (.xlsx)
             </button>
           </div>
         ))}
@@ -148,27 +149,23 @@ export default function ReportsView({ employees, attendance, manualLeaves }: Rep
               <thead>
                 <tr className="bg-slate-50 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 text-xs font-semibold uppercase tracking-wider border-b border-slate-200 dark:border-slate-800">
                   <th className="py-3.5 px-6">Name</th>
-                  <th className="py-3.5 px-6">Project</th>
+                  <th className="py-3.5 px-6">Department</th>
                   <th className="py-3.5 px-6 text-center">Working (W)</th>
                   <th className="py-3.5 px-6 text-center">Travel (T)</th>
                   <th className="py-3.5 px-6 text-center">Leave (L)</th>
-                  <th className="py-3.5 px-6 text-center">Absent (A)</th>
-                  <th className="py-3.5 px-6 text-center">Holiday (H)</th>
-                  <th className="py-3.5 px-6 text-center">Half Day (HD)</th>
+                  <th className="py-3.5 px-6 text-center">Standby (S)</th>
                   <th className="py-3.5 px-6 text-right">Attendance %</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
                 {compiledData.map((data, index) => (
                   <tr key={index} className="hover:bg-slate-100/50 dark:hover:bg-slate-900/20 transition-colors">
-                    <td className="py-3 px-6 font-bold text-slate-800 dark:text-white">{data.emp.name}</td>
-                    <td className="py-3 px-6 text-slate-600 dark:text-slate-400">{data.emp.project || '-'}</td>
+                    <td className="py-3 px-6 font-bold text-slate-800 dark:text-white">{data.prof.name}</td>
+                    <td className="py-3 px-6 text-slate-600 dark:text-slate-400">{data.prof.department || '-'}</td>
                     <td className="py-3 px-6 text-center font-mono">{data.working}</td>
                     <td className="py-3 px-6 text-center font-mono text-purple-600 dark:text-purple-400">{data.travel}</td>
                     <td className="py-3 px-6 text-center font-mono text-slate-400">{data.leave}</td>
-                    <td className="py-3 px-6 text-center font-mono text-red-600 dark:text-red-400">{data.absent}</td>
-                    <td className="py-3 px-6 text-center font-mono text-emerald-600 dark:text-emerald-400">{data.holiday}</td>
-                    <td className="py-3 px-6 text-center font-mono text-amber-600 dark:text-amber-400">{data.halfday}</td>
+                    <td className="py-3 px-6 text-center font-mono text-orange-600 dark:text-orange-400">{data.standby}</td>
                     <td className="py-3 px-6 text-right font-mono font-bold text-brand-600 dark:text-brand-400">{data.rate}%</td>
                   </tr>
                 ))}

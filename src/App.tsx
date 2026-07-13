@@ -5,6 +5,11 @@ import MasterSheetView from './views/MasterSheetView';
 import PlanningSheetView from './views/PlanningSheetView';
 import AttendanceView from './views/AttendanceView';
 import AvailabilityView from './views/AvailabilityView';
+import LeaveManagementView from './views/LeaveManagementView';
+import { validateMasterPlanningData } from './utils/validationHelper';
+
+import AuditLogView from './views/AuditLogView';
+import RecycleBinView from './views/RecycleBinView';
 
 // Icon imports
 import {
@@ -19,12 +24,27 @@ import {
   Menu,
   X,
   Bell,
-  Trash2
+  Trash2,
+  Database,
+  Calendar,
+  History,
+  ChevronDown,
+  ChevronRight,
+  MoreHorizontal
 } from 'lucide-react';
 
 export default function App() {
   const state = usePlanningState();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'master-sheet' | 'planning' | 'attendance' | 'availability-finder' | 'settings'>(() => {
+  const validationSummary = validateMasterPlanningData(
+    state.profiles,
+    state.projects,
+    state.assignments,
+    state.leaves,
+    state.attendance
+  );
+  const hasValidationErrors = validationSummary.errorsCount > 0;
+
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'audit-log' | 'recycle-bin' | 'settings'>(() => {
     return (localStorage.getItem('v2_active_tab') as any) || 'dashboard';
   });
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -42,10 +62,29 @@ export default function App() {
   const [masterProjectFilter, setMasterProjectFilter] = useState('');
   const [masterStatusFilter, setMasterStatusFilter] = useState('');
   const [masterActiveTodayOnly, setMasterActiveTodayOnly] = useState<boolean>(false);
+  const [isOthersExpanded, setIsOthersExpanded] = useState(() => {
+    const tab = localStorage.getItem('v2_active_tab') || 'dashboard';
+    return ['audit-log', 'recycle-bin', 'settings'].includes(tab);
+  });
+
+  const primaryNavigationItems = [
+    { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-5 h-5" /> },
+    { id: 'master-sheet', label: 'Master Sheet', icon: <Users className="w-5 h-5" /> },
+    { id: 'planning', label: 'Planning Grid', icon: <CalendarRange className="w-5 h-5" /> },
+    { id: 'leave-management', label: 'Leave Management', icon: <Calendar className="w-5 h-5" /> },
+    { id: 'availability-finder', label: 'Available Staff', icon: <SearchCheck className="w-5 h-5" /> },
+    { id: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-5 h-5" /> },
+  ];
+
+  const othersSubItems = [
+    { id: 'audit-log', label: 'History', icon: <History className="w-4 h-4" /> },
+    { id: 'recycle-bin', label: 'Recycle Bin', icon: <Trash2 className="w-4 h-4" /> },
+    { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
+  ];
 
   const handleNavigate = (
-    tab: 'dashboard' | 'master-sheet' | 'planning' | 'attendance' | 'availability-finder' | 'settings',
-    subTab?: 'assignments' | 'employees' | 'projects',
+    tab: 'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'settings',
+    subTab?: 'assignments' | 'employees' | 'projects' | 'recycle-bin',
     filters?: {
       search?: string;
       deptFilter?: string;
@@ -55,7 +94,9 @@ export default function App() {
     }
   ) => {
     setActiveTab(tab);
-    if (subTab) {
+    if (subTab === 'recycle-bin') {
+      setActiveTab('recycle-bin');
+    } else if (subTab) {
       setMasterSubTab(subTab);
     }
     // Always clear other filters first, and then apply specified ones from the dashboard click context
@@ -95,14 +136,7 @@ export default function App() {
     }
   }, [darkMode]);
 
-  const navigationItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-5 h-5" /> },
-    { id: 'master-sheet', label: 'Master Sheet', icon: <Users className="w-5 h-5" /> },
-    { id: 'planning', label: 'Planning Grid', icon: <CalendarRange className="w-5 h-5" /> },
-    { id: 'availability-finder', label: 'Available Staff', icon: <SearchCheck className="w-5 h-5" /> },
-    { id: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-5 h-5" /> },
-    { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
-  ];
+  // Navigation lists are declared as primaryNavigationItems and othersSubItems
 
   // Reset database helper for testing
   const handleResetData = async () => {
@@ -117,8 +151,19 @@ export default function App() {
     }
   };
 
+  const handleSeedData = async () => {
+    if (confirm("Are you sure you want to seed the database? This will clear all existing data and populate your Firestore collections with standard premium sample data.")) {
+      try {
+        await state.seedDatabase();
+        alert("Firestore database successfully seeded with sample data!");
+      } catch (err) {
+        console.error("Failed to seed Firestore database:", err);
+        alert("Error: Failed to seed Firestore database.");
+      }
+    }
+  };
+
   const renderActiveView = () => {
-    const mergedEmployees = state.getMergedAssignments();
     
     switch (activeTab) {
       case 'dashboard':
@@ -127,17 +172,15 @@ export default function App() {
             profiles={state.profiles}
             assignments={state.assignments}
             projects={state.projects}
-            attendance={state.attendance}
-            manualLeaves={state.manualLeaves}
+            leaves={state.leaves}
             onNavigate={handleNavigate}
           />
         );
       case 'master-sheet':
         return (
           <MasterSheetView
-            employees={mergedEmployees}
             attendance={state.attendance}
-            manualLeaves={state.manualLeaves}
+            leaves={state.leaves}
             profiles={state.profiles}
             projects={state.projects}
             assignments={state.assignments}
@@ -150,7 +193,6 @@ export default function App() {
             addAssignment={state.addAssignment}
             editAssignment={state.editAssignment}
             deleteAssignment={state.deleteAssignment}
-            getMergedAssignments={state.getMergedAssignments}
             activeSubTab={masterSubTab}
             setActiveSubTab={setMasterSubTab}
             search={masterSearch}
@@ -163,19 +205,42 @@ export default function App() {
             setStatusFilter={setMasterStatusFilter}
             activeTodayOnly={masterActiveTodayOnly}
             setActiveTodayOnly={setMasterActiveTodayOnly}
+            validationSummary={validationSummary}
+            hasValidationErrors={hasValidationErrors}
+            autoAlignMismatches={state.autoAlignMismatches}
           />
         );
       case 'planning':
-        return <PlanningSheetView employees={mergedEmployees} manualLeaves={state.manualLeaves} />;
+        return (
+          <PlanningSheetView 
+            profiles={state.profiles}
+            assignments={state.assignments}
+            projects={state.projects}
+            leaves={state.leaves}
+            hasValidationErrors={hasValidationErrors}
+          />
+        );
+      case 'leave-management':
+        return (
+          <LeaveManagementView
+            profiles={state.profiles}
+            leaves={state.leaves}
+            projects={state.projects}
+            assignments={state.assignments}
+            addLeave={state.addLeave}
+            editLeave={state.editLeave}
+            deleteLeave={state.deleteLeave}
+            approveLeaveStatus={state.approveLeaveStatus}
+          />
+        );
       case 'attendance':
         return (
           <AttendanceView
-            employees={mergedEmployees}
             profiles={state.profiles}
-            attendance={state.attendance}
-            manualLeaves={state.manualLeaves}
-            setSingleAttendance={state.setSingleAttendance}
-            setBulkAttendance={state.setBulkAttendance}
+            assignments={state.assignments}
+            projects={state.projects}
+            leaves={state.leaves}
+            hasValidationErrors={hasValidationErrors}
           />
         );
       case 'availability-finder':
@@ -185,7 +250,22 @@ export default function App() {
             assignments={state.assignments}
             projects={state.projects}
             attendance={state.attendance}
-            manualLeaves={state.manualLeaves}
+            leaves={state.leaves}
+          />
+        );
+      case 'audit-log':
+        return (
+          <AuditLogView
+            auditLogs={state.auditLogs}
+            revertChange={state.revertChange}
+          />
+        );
+      case 'recycle-bin':
+        return (
+          <RecycleBinView
+            recycleBin={state.recycleBin}
+            restoreRecycleItem={state.restoreRecycleItem}
+            deleteRecycleItemPermanently={state.deleteRecycleItemPermanently}
           />
         );
 
@@ -249,13 +329,22 @@ export default function App() {
               <div>
                 <h3 className="text-lg font-bold text-red-600 dark:text-red-400 mb-1">Danger Zone</h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">Destructive actions for testing purposes</p>
-                <button
-                  onClick={handleResetData}
-                  className="mt-4 flex items-center gap-2 px-4 py-2 bg-red-100 hover:bg-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900/40 rounded-xl text-sm font-semibold transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Reset Database Mockup
-                </button>
+                <div className="flex flex-wrap gap-3 mt-4">
+                  <button
+                    onClick={handleSeedData}
+                    className="flex items-center gap-2 px-4 py-2 bg-brand-50 hover:bg-brand-100 dark:bg-brand-950/20 dark:hover:bg-brand-900/20 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900/30 rounded-xl text-sm font-semibold transition-colors"
+                  >
+                    <Database className="w-4 h-4" />
+                    Seed Sample Data
+                  </button>
+                  <button
+                    onClick={handleResetData}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-100 hover:bg-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900/40 rounded-xl text-sm font-semibold transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Reset Database Mockup
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -266,8 +355,7 @@ export default function App() {
             profiles={state.profiles}
             assignments={state.assignments}
             projects={state.projects}
-            attendance={state.attendance}
-            manualLeaves={state.manualLeaves}
+            leaves={state.leaves}
             onNavigate={handleNavigate}
           />
         );
@@ -309,7 +397,8 @@ export default function App() {
         </div>
 
         <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
-          {navigationItems.map(item => (
+          {/* Primary Navigation */}
+          {primaryNavigationItems.map(item => (
             <button
               key={item.id}
               onClick={() => handleSidebarTabClick(item.id as any)}
@@ -324,6 +413,65 @@ export default function App() {
               {!isSidebarCollapsed && <span className="truncate">{item.label}</span>}
             </button>
           ))}
+
+          {/* Others Parent collapsible link */}
+          <div className="pt-2">
+            <button
+              onClick={() => setIsOthersExpanded(!isOthersExpanded)}
+              title={isSidebarCollapsed ? "Others" : undefined}
+              className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center px-2' : 'justify-between px-4'} py-3 text-sm font-semibold rounded-xl transition-all ${
+                ['audit-log', 'recycle-bin', 'settings'].includes(activeTab) && !isSidebarCollapsed
+                  ? 'text-brand-600 dark:text-brand-400 bg-slate-100/40 dark:bg-slate-800/20'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-150 dark:hover:bg-slate-800/40 hover:text-slate-900'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className="shrink-0">
+                  <MoreHorizontal className="w-5 h-5" />
+                </div>
+                {!isSidebarCollapsed && <span>Others</span>}
+              </div>
+              {!isSidebarCollapsed && (
+                isOthersExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />
+              )}
+            </button>
+
+            {/* Sub-items list */}
+            {isOthersExpanded && !isSidebarCollapsed && (
+              <div className="pl-6 mt-1 space-y-1">
+                {othersSubItems.map(item => (
+                  <button
+                    key={item.id}
+                    onClick={() => handleSidebarTabClick(item.id as any)}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                      activeTab === item.id 
+                        ? 'bg-brand-50 dark:bg-brand-950/20 text-brand-600 dark:text-brand-400 border-l-2 border-brand-500'
+                        : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/20 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="shrink-0">{item.icon}</div>
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Collapsed sidebar mode sub-items display (as individual items below header) */}
+            {isSidebarCollapsed && othersSubItems.map(item => (
+              <button
+                key={item.id}
+                onClick={() => handleSidebarTabClick(item.id as any)}
+                title={item.label}
+                className={`w-full flex items-center justify-center px-2 py-3 text-sm font-semibold rounded-xl transition-all duration-150 ${
+                  activeTab === item.id 
+                    ? 'bg-brand-600 text-white shadow-md shadow-brand-500/10'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/40 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <div className="shrink-0">{item.icon}</div>
+              </button>
+            ))}
+          </div>
         </nav>
 
         <div className={`p-4 border-t border-slate-200 dark:border-slate-800 flex items-center ${isSidebarCollapsed ? 'justify-center' : 'gap-4'} shrink-0`}>
@@ -371,7 +519,8 @@ export default function App() {
               </div>
 
               <nav className="space-y-1">
-                {navigationItems.map(item => (
+                {/* Primary navigation items */}
+                {primaryNavigationItems.map(item => (
                   <button
                     key={item.id}
                     onClick={() => handleSidebarTabClick(item.id as any)}
@@ -385,6 +534,39 @@ export default function App() {
                     {item.label}
                   </button>
                 ))}
+
+                {/* Mobile Collapsible Others */}
+                <div className="pt-2">
+                  <button
+                    onClick={() => setIsOthersExpanded(!isOthersExpanded)}
+                    className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/40"
+                  >
+                    <div className="flex items-center gap-3">
+                      <MoreHorizontal className="w-5 h-5" />
+                      <span>Others</span>
+                    </div>
+                    {isOthersExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  </button>
+                  
+                  {isOthersExpanded && (
+                    <div className="pl-6 mt-1 space-y-1">
+                      {othersSubItems.map(item => (
+                        <button
+                          key={item.id}
+                          onClick={() => handleSidebarTabClick(item.id as any)}
+                          className={`w-full flex items-center gap-3 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                            activeTab === item.id 
+                              ? 'bg-brand-50 dark:bg-brand-950/20 text-brand-600 dark:text-brand-400 border-l-2 border-brand-500'
+                              : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/20'
+                          }`}
+                        >
+                          {item.icon}
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </nav>
             </div>
             

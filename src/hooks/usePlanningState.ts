@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { db } from '../firebase';
+import { resolveStatusOnDate } from '../utils/timelineHelper';
 import { 
   collection, 
   onSnapshot, 
@@ -13,7 +14,7 @@ export interface EmployeeProfile {
   id: string; // Unique Employee ID
   name: string;
   department: string;
-  function: string;
+  designation: string;
 }
 
 export interface ProjectDetails {
@@ -37,7 +38,7 @@ export interface Employee {
   id: string;
   name: string;
   department: string;
-  function: string;
+  designation: string;
   project: string;
   budgetCode: string;
   projectStartDate: string;
@@ -49,7 +50,7 @@ export interface Employee {
 }
 
 export interface AttendanceRecord {
-  [key: string]: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD'; // key: `${employeeId}_${date}`
+  [key: string]: 'W' | 'L' | 'T' | 'S'; // key: `${employeeId}_${date}`
 }
 
 export interface ManualLeave {
@@ -57,20 +58,107 @@ export interface ManualLeave {
   date: string; // YYYY-MM-DD
 }
 
+export interface LeaveRecord {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  fromDate: string; // YYYY-MM-DD
+  toDate: string; // YYYY-MM-DD
+  leaveType: string;
+  remarks: string;
+  status: 'Pending' | 'Approved' | 'Rejected';
+  projectName?: string;
+}
+
+export interface RecycleBinItem {
+  id: string;
+  type: 'profile' | 'project' | 'assignment' | 'leave';
+  originalId: string;
+  data: any;
+  deletedAt: string; // ISO string
+}
+
+export interface AuditLogEntry {
+  id: string;
+  who: string;
+  when: string; // ISO string
+  actionType: 'create' | 'update' | 'delete' | 'restore';
+  recordType: 'profile' | 'project' | 'assignment' | 'leave';
+  recordId: string;
+  oldValue: any;
+  newValue: any;
+  description: string;
+}
 
 export function usePlanningState() {
   const [profiles, setProfiles] = useState<EmployeeProfile[]>([]);
   const [projects, setProjects] = useState<ProjectDetails[]>([]);
   const [assignments, setAssignments] = useState<ProjectAssignment[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord>({});
-  const [manualLeaves, setManualLeaves] = useState<ManualLeave[]>([]);
+  const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
+  const [recycleBin, setRecycleBin] = useState<RecycleBinItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+
+  const logChange = async (
+    actionType: 'create' | 'update' | 'delete' | 'restore',
+    recordType: 'profile' | 'project' | 'assignment' | 'leave',
+    recordId: string,
+    oldValue: any,
+    newValue: any,
+    description: string
+  ) => {
+    const activeUser = localStorage.getItem('v2_active_operator_name') || 'HR Administrator';
+    const logDoc = doc(collection(db, 'staff_audit_logs'));
+    await setDoc(logDoc, {
+      who: activeUser,
+      when: new Date().toISOString(),
+      actionType,
+      recordType,
+      recordId,
+      oldValue: oldValue ? JSON.parse(JSON.stringify(oldValue)) : null,
+      newValue: newValue ? JSON.parse(JSON.stringify(newValue)) : null,
+      description
+    });
+  };
+
+  // Recycle Bin 30-day retention prune
+  useEffect(() => {
+    if (recycleBin.length === 0) return;
+    const pruneExpiredItems = async () => {
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const batch = writeBatch(db);
+      let count = 0;
+      recycleBin.forEach(item => {
+        if (item.deletedAt) {
+          const deletedDate = new Date(item.deletedAt);
+          if (deletedDate < thirtyDaysAgo) {
+            batch.delete(doc(db, 'staff_recycle_bin', item.id));
+            count++;
+          }
+        }
+      });
+      if (count > 0) {
+        await batch.commit();
+        console.log(`Auto Audit: Pruned ${count} recycle bin records older than 30 days.`);
+      }
+    };
+    pruneExpiredItems();
+  }, [recycleBin]);
 
   // Subscriptions to Firestore Collections
   useEffect(() => {
     const unsubscribeProfiles = onSnapshot(collection(db, 'staff_profiles'), (snapshot) => {
       const list: EmployeeProfile[] = [];
       snapshot.forEach((doc) => {
-        list.push({ id: doc.id, ...doc.data() } as EmployeeProfile);
+        const data = doc.data();
+        const designation = data.designation || data.function || '';
+        list.push({
+          id: doc.id,
+          name: data.name || '',
+          department: data.department || '',
+          designation
+        });
       });
       setProfiles(list);
     });
@@ -99,12 +187,33 @@ export function usePlanningState() {
       setAttendance(record);
     });
 
-    const unsubscribeLeaves = onSnapshot(collection(db, 'staff_manual_leaves'), (snapshot) => {
-      const list: ManualLeave[] = [];
+    const unsubscribeLeaves = onSnapshot(collection(db, 'staff_leaves'), (snapshot) => {
+      const list: LeaveRecord[] = [];
       snapshot.forEach((doc) => {
-        list.push(doc.data() as ManualLeave);
+        list.push({ id: doc.id, ...doc.data() } as LeaveRecord);
       });
-      setManualLeaves(list);
+      setLeaves(list);
+    });
+
+    const unsubscribeRecycleBin = onSnapshot(collection(db, 'staff_recycle_bin'), (snapshot) => {
+      const list: RecycleBinItem[] = [];
+      snapshot.forEach((doc) => {
+        const item = { id: doc.id, ...doc.data() } as RecycleBinItem;
+        if (item.type === 'profile' && item.data) {
+          item.data.designation = item.data.designation || item.data.function || '';
+        }
+        list.push(item);
+      });
+      setRecycleBin(list);
+    });
+
+    const unsubscribeAuditLogs = onSnapshot(collection(db, 'staff_audit_logs'), (snapshot) => {
+      const list: AuditLogEntry[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as AuditLogEntry);
+      });
+      list.sort((a, b) => b.when.localeCompare(a.when));
+      setAuditLogs(list);
     });
 
     return () => {
@@ -113,60 +222,95 @@ export function usePlanningState() {
       unsubscribeAssignments();
       unsubscribeAttendance();
       unsubscribeLeaves();
+      unsubscribeRecycleBin();
+      unsubscribeAuditLogs();
     };
   }, []);
 
   // Employee Profile CRUD
-  const addProfile = (p: EmployeeProfile) => {
+  const addProfile = async (p: EmployeeProfile) => {
     if (profiles.some(x => x.id === p.id)) {
       alert(`Error: Employee ID '${p.id}' already exists.`);
       return false;
     }
-    setDoc(doc(db, 'staff_profiles', p.id), {
+    await setDoc(doc(db, 'staff_profiles', p.id), {
       name: p.name,
       department: p.department,
-      function: p.function
+      designation: p.designation
     });
+    await logChange('create', 'profile', p.id, null, p, `Created employee profile: ${p.name} (${p.id})`);
     return true;
   };
 
   const editProfile = async (_index: number, updated: EmployeeProfile) => {
+    const oldVal = profiles.find(x => x.id === updated.id);
     await setDoc(doc(db, 'staff_profiles', updated.id), {
       name: updated.name,
       department: updated.department,
-      function: updated.function
+      designation: updated.designation
     });
+    await logChange('update', 'profile', updated.id, oldVal, updated, `Updated employee profile: ${updated.name} (${updated.id})`);
   };
 
   const deleteProfile = async (index: number) => {
     const profile = profiles[index];
     const batch = writeBatch(db);
     
+    // Save profile to Recycle Bin
+    const profileRecycleDoc = doc(collection(db, 'staff_recycle_bin'));
+    batch.set(profileRecycleDoc, {
+      type: 'profile',
+      originalId: profile.id,
+      data: {
+        name: profile.name,
+        department: profile.department,
+        designation: profile.designation
+      },
+      deletedAt: new Date().toISOString()
+    });
+
     // Delete profile doc
     batch.delete(doc(db, 'staff_profiles', profile.id));
     
-    // Cascade delete assignments
+    // Cascade delete & recycle assignments
     const relatedAssignments = assignments.filter(a => a.employeeId === profile.id);
     relatedAssignments.forEach(a => {
       if ((a as any).id) {
-        batch.delete(doc(db, 'staff_assignments', (a as any).id));
+        const docId = (a as any).id;
+        const assignRecycleDoc = doc(collection(db, 'staff_recycle_bin'));
+        batch.set(assignRecycleDoc, {
+          type: 'assignment',
+          originalId: docId,
+          data: {
+            employeeId: a.employeeId,
+            projectName: a.projectName,
+            travelStartDate: a.travelStartDate,
+            travelEndDate: a.travelEndDate,
+            status: a.status,
+            remarks: a.remarks
+          },
+          deletedAt: new Date().toISOString()
+        });
+        batch.delete(doc(db, 'staff_assignments', docId));
       }
     });
 
     await batch.commit();
+    await logChange('delete', 'profile', profile.id, profile, null, `Deleted employee profile: ${profile.name} (${profile.id})`);
   };
 
   // Projects CRUD
-  const addProject = (p: ProjectDetails) => {
+  const addProject = async (p: ProjectDetails) => {
     if (projects.some(x => x.name.toLowerCase() === p.name.toLowerCase())) {
       alert(`Error: Project named '${p.name}' already exists.`);
       return false;
     }
-    setDoc(doc(db, 'staff_projects', p.name), {
+    await setDoc(doc(db, 'staff_projects', p.name), {
       budgetCode: p.budgetCode,
       startDate: p.startDate,
       endDate: p.endDate
     });
+    await logChange('create', 'project', p.name, null, p, `Created project: ${p.name} (Budget: ${p.budgetCode})`);
     return true;
   };
 
@@ -199,30 +343,61 @@ export function usePlanningState() {
     }
 
     await batch.commit();
+    await logChange('update', 'project', updated.name, oldProj, updated, `Updated project: ${updated.name}`);
   };
 
   const deleteProject = async (index: number) => {
     const proj = projects[index];
     const batch = writeBatch(db);
 
+    // Save project to Recycle Bin
+    const projectRecycleDoc = doc(collection(db, 'staff_recycle_bin'));
+    batch.set(projectRecycleDoc, {
+      type: 'project',
+      originalId: proj.name,
+      data: {
+        budgetCode: proj.budgetCode,
+        startDate: proj.startDate,
+        endDate: proj.endDate
+      },
+      deletedAt: new Date().toISOString()
+    });
+
     // Delete project doc
     batch.delete(doc(db, 'staff_projects', proj.name));
 
-    // Cascade delete assignments
+    // Cascade delete & recycle assignments
     const relatedAssignments = assignments.filter(a => a.projectName === proj.name);
     relatedAssignments.forEach(a => {
       if ((a as any).id) {
-        batch.delete(doc(db, 'staff_assignments', (a as any).id));
+        const docId = (a as any).id;
+        const assignRecycleDoc = doc(collection(db, 'staff_recycle_bin'));
+        batch.set(assignRecycleDoc, {
+          type: 'assignment',
+          originalId: docId,
+          data: {
+            employeeId: a.employeeId,
+            projectName: a.projectName,
+            travelStartDate: a.travelStartDate,
+            travelEndDate: a.travelEndDate,
+            status: a.status,
+            remarks: a.remarks
+          },
+          deletedAt: new Date().toISOString()
+        });
+        batch.delete(doc(db, 'staff_assignments', docId));
       }
     });
 
     await batch.commit();
+    await logChange('delete', 'project', proj.name, proj, null, `Deleted project: ${proj.name}`);
   };
 
   // Assignments CRUD
   const addAssignment = async (a: ProjectAssignment) => {
     const docRef = doc(collection(db, 'staff_assignments'));
     await setDoc(docRef, a);
+    await logChange('create', 'assignment', docRef.id, null, a, `Created assignment for employee ${a.employeeId} on project ${a.projectName}`);
   };
 
   const editAssignment = async (index: number, updated: ProjectAssignment) => {
@@ -230,6 +405,7 @@ export function usePlanningState() {
     if (oldAssignment && (oldAssignment as any).id) {
       const docId = (oldAssignment as any).id;
       await setDoc(doc(db, 'staff_assignments', docId), updated);
+      await logChange('update', 'assignment', docId, oldAssignment, updated, `Updated assignment for employee ${updated.employeeId} on project ${updated.projectName}`);
     }
   };
 
@@ -237,7 +413,27 @@ export function usePlanningState() {
     const oldAssignment = assignments[index];
     if (oldAssignment && (oldAssignment as any).id) {
       const docId = (oldAssignment as any).id;
-      await deleteDoc(doc(db, 'staff_assignments', docId));
+      const batch = writeBatch(db);
+
+      // Save to Recycle Bin
+      const assignRecycleDoc = doc(collection(db, 'staff_recycle_bin'));
+      batch.set(assignRecycleDoc, {
+        type: 'assignment',
+        originalId: docId,
+        data: {
+          employeeId: oldAssignment.employeeId,
+          projectName: oldAssignment.projectName,
+          travelStartDate: oldAssignment.travelStartDate,
+          travelEndDate: oldAssignment.travelEndDate,
+          status: oldAssignment.status,
+          remarks: oldAssignment.remarks
+        },
+        deletedAt: new Date().toISOString()
+      });
+
+      batch.delete(doc(db, 'staff_assignments', docId));
+      await batch.commit();
+      await logChange('delete', 'assignment', docId, oldAssignment, null, `Deleted assignment for employee ${oldAssignment.employeeId} on project ${oldAssignment.projectName}`);
     }
   };
 
@@ -263,7 +459,7 @@ export function usePlanningState() {
   // Get Joined/Merged structure for Planning and views compatibility
   const getMergedAssignments = (): Employee[] => {
     return assignments.map(a => {
-      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', function: 'Unknown' };
+      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
       
       let proj = { budgetCode: '', startDate: '', endDate: '' };
       if (a.projectName) {
@@ -281,7 +477,7 @@ export function usePlanningState() {
         id: a.employeeId,
         name: prof.name,
         department: prof.department,
-        function: prof.function,
+        designation: prof.designation,
         project: a.projectName || '',
         budgetCode: proj.budgetCode || '',
         projectStartDate: proj.startDate || '',
@@ -294,37 +490,62 @@ export function usePlanningState() {
     });
   };
 
-  // Set Manual Leaves
-  const toggleManualLeave = async (employeeId: string, date: string) => {
-    const docId = `${employeeId}_${date}`;
-    const exists = manualLeaves.some(l => l.employeeId === employeeId && l.date === date);
-    if (exists) {
-      await deleteDoc(doc(db, 'staff_manual_leaves', docId));
-    } else {
-      await setDoc(doc(db, 'staff_manual_leaves', docId), { employeeId, date });
+
+
+  // Leave Management CRUD
+  const addLeave = async (l: Omit<LeaveRecord, 'id'>) => {
+    const docRef = doc(collection(db, 'staff_leaves'));
+    await setDoc(docRef, { ...l });
+    await logChange('create', 'leave', docRef.id, null, l, `Created leave request for ${l.employeeName} (${l.fromDate} to ${l.toDate})`);
+  };
+
+  const editLeave = async (id: string, l: Omit<LeaveRecord, 'id'>) => {
+    const oldVal = leaves.find(x => x.id === id);
+    await setDoc(doc(db, 'staff_leaves', id), { ...l });
+    await logChange('update', 'leave', id, oldVal, l, `Updated leave details for ${l.employeeName}`);
+  };
+
+  const deleteLeave = async (id: string) => {
+    const oldVal = leaves.find(x => x.id === id);
+    if (oldVal) {
+      const batch = writeBatch(db);
+      const recycleDoc = doc(collection(db, 'staff_recycle_bin'));
+      batch.set(recycleDoc, {
+        type: 'leave',
+        originalId: id,
+        data: {
+          employeeId: oldVal.employeeId,
+          employeeName: oldVal.employeeName,
+          fromDate: oldVal.fromDate,
+          toDate: oldVal.toDate,
+          leaveType: oldVal.leaveType,
+          remarks: oldVal.remarks,
+          status: oldVal.status,
+          projectName: oldVal.projectName || ''
+        },
+        deletedAt: new Date().toISOString()
+      });
+      batch.delete(doc(db, 'staff_leaves', id));
+      await batch.commit();
+      await logChange('delete', 'leave', id, oldVal, null, `Deleted leave request for ${oldVal.employeeName}`);
     }
   };
 
-  const addManualLeaveRange = async (employeeId: string, startDateStr: string, endDateStr: string) => {
-    const start = new Date(startDateStr);
-    const end = new Date(endDateStr);
-    const batch = writeBatch(db);
-    
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      const docId = `${employeeId}_${dateStr}`;
-      batch.set(doc(db, 'staff_manual_leaves', docId), { employeeId, date: dateStr });
+  const approveLeaveStatus = async (id: string, status: 'Pending' | 'Approved' | 'Rejected') => {
+    const oldVal = leaves.find(x => x.id === id);
+    if (oldVal) {
+      await setDoc(doc(db, 'staff_leaves', id), { status }, { merge: true });
+      const newVal = { ...oldVal, status };
+      await logChange('update', 'leave', id, oldVal, newVal, `Updated leave status to ${status} for ${oldVal.employeeName}`);
     }
-
-    await batch.commit();
   };
 
   // Attendance
-  const setSingleAttendance = async (employeeId: string, date: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
+  const setSingleAttendance = async (employeeId: string, date: string, status: 'W' | 'L' | 'T' | 'S') => {
     await setDoc(doc(db, 'staff_attendance', `${employeeId}_${date}`), { status });
   };
 
-  const setBulkAttendance = async (employeeId: string, startDateStr: string, endDateStr: string, status: 'W' | 'L' | 'T' | 'A' | 'H' | 'HD') => {
+  const setBulkAttendance = async (employeeId: string, startDateStr: string, endDateStr: string, status: 'W' | 'L' | 'T' | 'S') => {
     const start = new Date(startDateStr);
     const end = new Date(endDateStr);
     const batch = writeBatch(db);
@@ -344,6 +565,28 @@ export function usePlanningState() {
     await batch.commit();
   };
 
+  const autoAlignMismatches = async () => {
+    const batch = writeBatch(db);
+    let count = 0;
+    Object.keys(attendance || {}).forEach(key => {
+      const parts = key.split('_');
+      if (parts.length === 2) {
+        const empId = parts[0];
+        const dateStr = parts[1];
+        const manualStatus = attendance[key];
+        const expectedStatus = resolveStatusOnDate(empId, dateStr, assignments, projects, leaves);
+        if (manualStatus && expectedStatus && manualStatus !== expectedStatus) {
+          batch.set(doc(db, 'staff_attendance', key), { status: expectedStatus });
+          count++;
+        }
+      }
+    });
+    if (count > 0) {
+      await batch.commit();
+    }
+    return count;
+  };
+
   const resetDatabase = async () => {
     const batch = writeBatch(db);
     
@@ -361,8 +604,10 @@ export function usePlanningState() {
       }
     });
 
-    manualLeaves.forEach(l => {
-      batch.delete(doc(db, 'staff_manual_leaves', `${l.employeeId}_${l.date}`));
+
+
+    leaves.forEach(l => {
+      batch.delete(doc(db, 'staff_leaves', l.id));
     });
 
     Object.keys(attendance).forEach(key => {
@@ -372,15 +617,206 @@ export function usePlanningState() {
     await batch.commit();
   };
 
+  const seedDatabase = async () => {
+    // Clear database first
+    await resetDatabase();
+
+    const batch = writeBatch(db);
+
+    // Add sample employee profiles
+    const sampleProfiles = [
+      { id: 'EMP001', name: 'John Doe', department: 'Engineering', function: 'Frontend Developer' },
+      { id: 'EMP002', name: 'Jane Smith', department: 'Product', function: 'Product Manager' },
+      { id: 'EMP003', name: 'Alice Johnson', department: 'Engineering', function: 'DevOps Engineer' },
+      { id: 'EMP004', name: 'Bob Brown', department: 'Design', function: 'UI/UX Designer' },
+      { id: 'EMP005', name: 'Charlie Green', department: 'QA', function: 'QA Lead' }
+    ];
+
+    sampleProfiles.forEach(p => {
+      batch.set(doc(db, 'staff_profiles', p.id), {
+        name: p.name,
+        department: p.department,
+        function: p.function
+      });
+    });
+
+    // Add sample projects starting from today
+    const today = new Date();
+    const oneMonthFromNow = new Date(today);
+    oneMonthFromNow.setMonth(today.getMonth() + 1);
+    const threeMonthsFromNow = new Date(today);
+    threeMonthsFromNow.setMonth(today.getMonth() + 3);
+
+    const formatDate = (d: Date) => d.toISOString().split('T')[0];
+
+    const sampleProjects = [
+      { name: 'Project Phoenix', budgetCode: 'BC-PHX-101', startDate: formatDate(today), endDate: formatDate(threeMonthsFromNow) },
+      { name: 'Project Apollo', budgetCode: 'BC-APL-202', startDate: formatDate(today), endDate: formatDate(oneMonthFromNow) },
+      { name: 'Project Gemini', budgetCode: 'BC-GEM-303', startDate: formatDate(today), endDate: formatDate(threeMonthsFromNow) }
+    ];
+
+    sampleProjects.forEach(p => {
+      batch.set(doc(db, 'staff_projects', p.name), {
+        budgetCode: p.budgetCode,
+        startDate: p.startDate,
+        endDate: p.endDate
+      });
+    });
+
+    // Add sample assignments
+    const sampleAssignments = [
+      {
+        employeeId: 'EMP001',
+        projectName: 'Project Phoenix',
+        travelStartDate: formatDate(today),
+        travelEndDate: formatDate(oneMonthFromNow),
+        status: 'Working' as const,
+        remarks: 'Frontend implementation and styling'
+      },
+      {
+        employeeId: 'EMP002',
+        projectName: 'Project Apollo',
+        travelStartDate: formatDate(today),
+        travelEndDate: formatDate(oneMonthFromNow),
+        status: 'Travelling' as const,
+        remarks: 'Travelling for product launch and onboarding'
+      },
+      {
+        employeeId: 'EMP003',
+        projectName: 'Project Gemini',
+        travelStartDate: formatDate(today),
+        travelEndDate: formatDate(threeMonthsFromNow),
+        status: 'Working' as const,
+        remarks: 'DevOps and cloud infrastructure setup'
+      }
+    ];
+
+    sampleAssignments.forEach(a => {
+      const docRef = doc(collection(db, 'staff_assignments'));
+      batch.set(docRef, {
+        employeeId: a.employeeId,
+        projectName: a.projectName,
+        travelStartDate: a.travelStartDate,
+        travelEndDate: a.travelEndDate,
+        status: a.status,
+        remarks: a.remarks
+      });
+    });
+
+    // Add sample leave records
+    const sampleLeaves = [
+      {
+        employeeId: 'EMP001',
+        employeeName: 'John Doe',
+        fromDate: formatDate(new Date(today.getTime() + 15 * 24 * 60 * 60 * 1000)),
+        toDate: formatDate(new Date(today.getTime() + 20 * 24 * 60 * 60 * 1000)),
+        leaveType: 'Annual',
+        remarks: 'Visiting family',
+        status: 'Approved' as const
+      },
+      {
+        employeeId: 'EMP004',
+        employeeName: 'Bob Brown',
+        fromDate: formatDate(today),
+        toDate: formatDate(new Date(today.getTime() + 5 * 24 * 60 * 60 * 1000)),
+        leaveType: 'Sick',
+        remarks: 'Medical recovery',
+        status: 'Approved' as const
+      },
+      {
+        employeeId: 'EMP005',
+        employeeName: 'Charlie Green',
+        fromDate: formatDate(new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000)),
+        toDate: formatDate(new Date(today.getTime() + 6 * 24 * 60 * 60 * 1000)),
+        leaveType: 'Casual',
+        remarks: 'Personal errands',
+        status: 'Pending' as const
+      }
+    ];
+
+    sampleLeaves.forEach(l => {
+      const docRef = doc(collection(db, 'staff_leaves'));
+      batch.set(docRef, l);
+    });
+
+    await batch.commit();
+  };
+
+  const restoreRecycleItem = async (itemId: string) => {
+    const item = recycleBin.find(x => x.id === itemId);
+    if (!item) return;
+
+    const batch = writeBatch(db);
+
+    if (item.type === 'profile') {
+      batch.set(doc(db, 'staff_profiles', item.originalId), item.data);
+    } else if (item.type === 'project') {
+      batch.set(doc(db, 'staff_projects', item.originalId), item.data);
+    } else if (item.type === 'assignment') {
+      batch.set(doc(db, 'staff_assignments', item.originalId), item.data);
+    } else if (item.type === 'leave') {
+      batch.set(doc(db, 'staff_leaves', item.originalId), item.data);
+    }
+
+    batch.delete(doc(db, 'staff_recycle_bin', itemId));
+    await batch.commit();
+    await logChange('restore', item.type as any, item.originalId, null, item.data, `Restored deleted ${item.type} from Recycle Bin`);
+  };
+
+  const deleteRecycleItemPermanently = async (itemId: string) => {
+    await deleteDoc(doc(db, 'staff_recycle_bin', itemId));
+  };
+
+  const revertChange = async (log: AuditLogEntry) => {
+    const collectionMap: Record<string, string> = {
+      profile: 'staff_profiles',
+      project: 'staff_projects',
+      assignment: 'staff_assignments',
+      leave: 'staff_leaves'
+    };
+    const collectionName = collectionMap[log.recordType];
+    if (!collectionName) return;
+
+    const batch = writeBatch(db);
+
+    if (log.actionType === 'create') {
+      // Revert create => Delete doc
+      batch.delete(doc(db, collectionName, log.recordId));
+      await batch.commit();
+      await logChange('delete', log.recordType, log.recordId, log.newValue, null, `Rolled back creation of ${log.recordType}: deleted record.`);
+    } else if (log.actionType === 'delete') {
+      // Revert delete => Restore oldValue
+      batch.set(doc(db, collectionName, log.recordId), log.oldValue);
+      await batch.commit();
+      await logChange('restore', log.recordType, log.recordId, null, log.oldValue, `Rolled back deletion of ${log.recordType}: restored record.`);
+    } else if (log.actionType === 'update') {
+      // Revert update => Revert to oldValue
+      batch.set(doc(db, collectionName, log.recordId), log.oldValue);
+      await batch.commit();
+      await logChange('update', log.recordType, log.recordId, log.newValue, log.oldValue, `Rolled back update of ${log.recordType} to previous state.`);
+    } else if (log.actionType === 'restore') {
+      // Revert restore => Delete doc
+      batch.delete(doc(db, collectionName, log.recordId));
+      await batch.commit();
+      await logChange('delete', log.recordType, log.recordId, log.newValue, null, `Rolled back restoration of ${log.recordType}: deleted record.`);
+    }
+  };
+
   return {
     profiles,
     projects,
     assignments,
     attendance,
-    manualLeaves,
+    leaves,
+    recycleBin,
+    auditLogs,
     addProfile,
     editProfile,
     deleteProfile,
+    addLeave,
+    editLeave,
+    deleteLeave,
+    approveLeaveStatus,
     addProject,
     editProject,
     deleteProject,
@@ -389,10 +825,13 @@ export function usePlanningState() {
     deleteAssignment,
     bulkUpdateAssignments,
     getMergedAssignments,
-    toggleManualLeave,
-    addManualLeaveRange,
     setSingleAttendance,
     setBulkAttendance,
     resetDatabase,
+    seedDatabase,
+    restoreRecycleItem,
+    deleteRecycleItemPermanently,
+    revertChange,
+    autoAlignMismatches,
   };
 }

@@ -1,19 +1,19 @@
 import { useState } from 'react';
-import type { Employee, EmployeeProfile, ProjectAssignment, ProjectDetails, AttendanceRecord, ManualLeave } from '../hooks/usePlanningState';
+import type { Employee, EmployeeProfile, ProjectAssignment, ProjectDetails, AttendanceRecord, LeaveRecord } from '../hooks/usePlanningState';
 import { format, eachDayOfInterval } from 'date-fns';
 import { Search, UserX, AlertCircle, Download } from 'lucide-react';
 import { exportAvailabilityReportToExcel } from '../utils/excelHelper';
-import { getCellStatus, safeParseDate } from '../utils/timelineHelper';
+import { safeParseDate, resolveStatusOnDate } from '../utils/timelineHelper';
 
 interface AvailabilityViewProps {
   profiles: EmployeeProfile[];
   assignments: ProjectAssignment[];
   projects: ProjectDetails[];
   attendance: AttendanceRecord;
-  manualLeaves: ManualLeave[];
+  leaves: LeaveRecord[];
 }
 
-export default function AvailabilityView({ profiles, assignments, projects, attendance, manualLeaves }: AvailabilityViewProps) {
+export default function AvailabilityView({ profiles, assignments, projects, attendance, leaves }: AvailabilityViewProps) {
   // Query Form State
   const [startDateStr, setStartDateStr] = useState('2026-05-01');
   const [endDateStr, setEndDateStr] = useState('2026-05-15');
@@ -35,7 +35,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
   };
 
   const departments = Array.from(new Set(profiles.map(p => p.department)));
-  const functions = Array.from(new Set(profiles.map(p => p.function)));
+  const designations = Array.from(new Set(profiles.map(p => p.designation)));
 
   // Availability Logic: Find free employees
   const handleSearch = (e: React.FormEvent) => {
@@ -66,7 +66,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
 
       // Filter by department/function if requested
       if (deptFilter && prof.department !== deptFilter) return;
-      if (funcFilter && prof.function !== funcFilter) return;
+      if (funcFilter && prof.designation !== funcFilter) return;
 
       const days = eachDayOfInterval({ start: searchStart, end: searchEnd });
       const freeDays: Date[] = [];
@@ -75,43 +75,28 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
       days.forEach(day => {
         const dayStr = format(day, 'yyyy-MM-dd');
 
-        // A: Check status from planning grid (getCellStatus)
-        let dayProject = '';
-        const isOccupied = empAssignments.some(assign => {
-          const projDetails = projects.find(p => p.name === assign.projectName);
-          const empObj: Employee = {
-            id: prof.id,
-            name: prof.name,
-            department: prof.department,
-            function: prof.function,
-            project: assign.projectName,
-            budgetCode: projDetails?.budgetCode || '',
-            projectStartDate: projDetails?.startDate || '',
-            projectEndDate: projDetails?.endDate || '',
-            travelStartDate: assign.travelStartDate,
-            travelEndDate: assign.travelEndDate,
-            status: assign.status,
-            remarks: assign.remarks
-          };
-          const status = getCellStatus(empObj, dayStr, []);
-          const matched = status === 'W' || status === 'T' || status === 'L';
-          if (matched) {
-            dayProject = assign.projectName || 'On Leave/Travelling';
-          }
-          return matched;
-        });
+        // A: Check status from planning grid using resolved status
+        const status = resolveStatusOnDate(prof.id, dayStr, assignments, projects, leaves);
 
-        // B: Check manual leaves override
-        const hasLeave = manualLeaves.some(l => l.employeeId === prof.id && l.date === dayStr);
-
-        // C: Check attendance override codes
+        // B: Check attendance override codes
         const attCode = attendance[`${prof.id}_${dayStr}`];
-        const isUnavailableAtt = attCode === 'L' || attCode === 'T' || attCode === 'A';
+        const isUnavailableAtt = attCode === 'L' || attCode === 'T';
 
-        if (isOccupied || hasLeave || isUnavailableAtt) {
-          if (dayProject) occupiedProjects.add(dayProject);
-          if (hasLeave) occupiedProjects.add('On Leave');
-          if (isUnavailableAtt) occupiedProjects.add('Attendance override');
+        if (status === 'W' || status === 'T' || status === 'L' || isUnavailableAtt) {
+          if (status === 'W' || status === 'T') {
+            const activeAss = empAssignments.find(assign => {
+              const projDetails = projects.find(p => p.name === assign.projectName);
+              const startStr = assign.travelStartDate || projDetails?.startDate || '';
+              const endStr = assign.travelEndDate || projDetails?.endDate || '';
+              return dayStr >= startStr && dayStr <= endStr;
+            });
+            occupiedProjects.add(activeAss?.projectName || 'Project Allocation');
+          } else if (status === 'L') {
+            occupiedProjects.add('On Leave');
+          }
+          if (isUnavailableAtt) {
+            occupiedProjects.add('Attendance override');
+          }
         } else {
           freeDays.push(day);
         }
@@ -163,13 +148,13 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
 
         const occupiedText = allocations.length > 0
           ? `Busy on: ${allocations.join(', ')}`
-          : 'Fully Free';
+          : 'Standby';
 
         const empObj: Employee = {
           id: prof.id,
           name: prof.name,
           department: prof.department,
-          function: prof.function,
+          designation: prof.designation,
           project: empAssignments.map(a => a.projectName).filter(Boolean).join(', ') || 'Unassigned',
           budgetCode: '',
           projectStartDate: '',
@@ -203,9 +188,9 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
       } else if (sortField === 'department') {
         valA = a.employee.department;
         valB = b.employee.department;
-      } else if (sortField === 'function') {
-        valA = a.employee.function;
-        valB = b.employee.function;
+      } else if (sortField === 'designation') {
+        valA = a.employee.designation;
+        valB = b.employee.designation;
       } else if (sortField === 'totalFreeDays') {
         valA = a.totalFreeDays;
         valB = b.totalFreeDays;
@@ -214,8 +199,8 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
         valB = b.occupiedDetails;
       } else {
         // default: allocated first, then free days descending
-        const aAllocated = a.occupiedDetails !== 'Fully Free' ? 1 : 0;
-        const bAllocated = b.occupiedDetails !== 'Fully Free' ? 1 : 0;
+        const aAllocated = a.occupiedDetails !== 'Standby' ? 1 : 0;
+        const bAllocated = b.occupiedDetails !== 'Standby' ? 1 : 0;
         if (aAllocated !== bAllocated) {
           return bAllocated - aAllocated;
         }
@@ -282,14 +267,14 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Function</label>
+            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Designation</label>
             <select
               value={funcFilter}
               onChange={e => setFuncFilter(e.target.value)}
               className="w-full px-3 py-2 bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-sm focus:outline-none transition-colors cursor-pointer"
             >
-              <option value="">All Functions</option>
-              {functions.map(f => <option key={f} value={f}>{f}</option>)}
+              <option value="">All Designations</option>
+              {designations.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
           </div>
 
@@ -308,7 +293,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
-              <h3 className="text-lg font-bold text-slate-800 dark:text-white">Matching Free Staff ({filteredResults.length})</h3>
+              <h3 className="text-lg font-bold text-slate-800 dark:text-white">Matching Standby Staff ({filteredResults.length})</h3>
               <p className="text-xs text-slate-500">Query window: {startDateStr} to {endDateStr}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -355,16 +340,16 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
                         <span className="text-[10px] opacity-70">{sortField === 'department' ? (sortAsc ? '▲' : '▼') : '↕'}</span>
                       </div>
                     </th>
-                    <th className="py-3.5 px-6 cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-100 transition-colors" onClick={() => handleSort('function')}>
+                    <th className="py-3.5 px-6 cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-100 transition-colors" onClick={() => handleSort('designation')}>
                       <div className="flex items-center gap-1">
-                        Function
-                        <span className="text-[10px] opacity-70">{sortField === 'function' ? (sortAsc ? '▲' : '▼') : '↕'}</span>
+                        Designation
+                        <span className="text-[10px] opacity-70">{sortField === 'designation' ? (sortAsc ? '▲' : '▼') : '↕'}</span>
                       </div>
                     </th>
                     <th className="py-3.5 px-6 select-none">Available Periods (in Range)</th>
                     <th className="py-3.5 px-6 cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-100 transition-colors" onClick={() => handleSort('totalFreeDays')}>
                       <div className="flex items-center gap-1">
-                        Total Free Days
+                        Total Standby Days
                         <span className="text-[10px] opacity-70">{sortField === 'totalFreeDays' ? (sortAsc ? '▲' : '▼') : '↕'}</span>
                       </div>
                     </th>
@@ -383,7 +368,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
                         <td className="py-3.5 px-6 font-mono font-medium text-slate-600 dark:text-slate-400">{res.employee.id}</td>
                         <td className="py-3.5 px-6 font-bold text-slate-800 dark:text-white">{res.employee.name}</td>
                         <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{res.employee.department}</td>
-                        <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{res.employee.function}</td>
+                        <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{res.employee.designation}</td>
                         <td className="py-3.5 px-6 font-medium text-slate-700 dark:text-slate-300">
                           <div className="flex flex-col gap-1">
                             {res.freeRanges.map((r, rIdx) => (
@@ -395,7 +380,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
                         </td>
                         <td className="py-3.5 px-6 text-blue-600 dark:text-blue-400 font-bold font-mono">{res.totalFreeDays} Days</td>
                         <td className="py-3.5 px-6">
-                          <span className={`text-xs font-medium ${res.occupiedDetails === 'Fully Free' ? 'text-emerald-600 font-bold' : 'text-slate-500'}`}>
+                          <span className={`text-xs font-medium ${res.occupiedDetails === 'Standby' ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-slate-500'}`}>
                             {res.occupiedDetails}
                           </span>
                         </td>

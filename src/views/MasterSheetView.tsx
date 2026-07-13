@@ -1,8 +1,16 @@
-import { useState, useRef } from 'react';
-import type { EmployeeProfile, ProjectDetails, ProjectAssignment, Employee } from '../hooks/usePlanningState';
-import { importFromExcel, exportToExcel, importProjectsFromExcel, importEmployeesFromExcel, downloadExcelTemplate } from '../utils/excelHelper';
+import { useState, useRef, useEffect } from 'react';
+import type { EmployeeProfile, ProjectDetails, ProjectAssignment, LeaveRecord } from '../hooks/usePlanningState';
+import { 
+  importFromExcel, 
+  exportDatabaseToExcel, 
+  importProjectsFromExcel, 
+  importEmployeesFromExcel, 
+  downloadExcelTemplate,
+  exportConsolidatedReportToExcel
+} from '../utils/excelHelper';
 import { format } from 'date-fns';
-import { normalizeDateString } from '../utils/timelineHelper';
+import { normalizeDateString, resolveStatusOnDate, formatToClientDate } from '../utils/timelineHelper';
+import { exportValidationReportToExcel, type ValidationIssue } from '../utils/validationHelper';
 import { 
   Plus, 
   Trash2, 
@@ -14,27 +22,27 @@ import {
   X,
   Briefcase,
   Users,
-  Link2
+  Link2,
+  FileSpreadsheet,
+  CheckCircle2
 } from 'lucide-react';
 
 interface MasterSheetViewProps {
-  employees: Employee[]; // merged legacy array for compatibility/exports
   attendance: any;
-  manualLeaves: any;
+  leaves: LeaveRecord[];
   // Normalized API
   profiles: EmployeeProfile[];
   projects: ProjectDetails[];
   assignments: ProjectAssignment[];
-  addProfile: (p: EmployeeProfile) => boolean;
+  addProfile: (p: EmployeeProfile) => Promise<boolean> | boolean;
   editProfile: (idx: number, p: EmployeeProfile) => void;
   deleteProfile: (idx: number) => void;
-  addProject: (p: ProjectDetails) => boolean;
+  addProject: (p: ProjectDetails) => Promise<boolean> | boolean;
   editProject: (idx: number, p: ProjectDetails) => void;
   deleteProject: (idx: number) => void;
   addAssignment: (a: ProjectAssignment) => void;
   editAssignment: (idx: number, a: ProjectAssignment) => void;
   deleteAssignment: (idx: number) => void;
-  getMergedAssignments: () => Employee[];
 
   // Lifted state and setters for navigation/filtering
   activeSubTab: 'assignments' | 'employees' | 'projects';
@@ -49,12 +57,20 @@ interface MasterSheetViewProps {
   setStatusFilter: (status: string) => void;
   activeTodayOnly: boolean;
   setActiveTodayOnly: (active: boolean) => void;
+  validationSummary: {
+    totalRecordsChecked: number;
+    validRecordsCount: number;
+    issues: ValidationIssue[];
+    errorsCount: number;
+    warningsCount: number;
+  };
+  hasValidationErrors: boolean;
+  autoAlignMismatches: () => Promise<number>;
 }
 
 export default function MasterSheetView({
-  employees,
   attendance,
-  manualLeaves,
+  leaves,
   profiles,
   projects,
   assignments,
@@ -67,7 +83,6 @@ export default function MasterSheetView({
   addAssignment,
   editAssignment,
   deleteAssignment,
-  getMergedAssignments,
 
   activeSubTab,
   setActiveSubTab,
@@ -80,17 +95,41 @@ export default function MasterSheetView({
   statusFilter,
   setStatusFilter,
   activeTodayOnly,
-  setActiveTodayOnly
+  setActiveTodayOnly,
+  validationSummary,
+  hasValidationErrors,
+  autoAlignMismatches
 }: MasterSheetViewProps) {
   // Modals state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
+  // Validation UI panel state
+  const [showValidationPanel, setShowValidationPanel] = useState(false);
+
+  // Date Range state
+  const [startDateStr, setStartDateStr] = useState('2026-05-01');
+  const [endDateStr, setEndDateStr] = useState('2026-06-30');
+
+  // Export modal range states
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState('2026-05-01');
+  const [exportEndDate, setExportEndDate] = useState('2026-06-30');
+
+  // Sync export dates with filter dates
+  useEffect(() => {
+    setExportStartDate(startDateStr);
+  }, [startDateStr]);
+
+  useEffect(() => {
+    setExportEndDate(endDateStr);
+  }, [endDateStr]);
+
   // File upload ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form states
-  const [profileForm, setProfileForm] = useState<EmployeeProfile>({ id: '', name: '', department: 'Engineering', function: '' });
+  const [profileForm, setProfileForm] = useState<EmployeeProfile>({ id: '', name: '', department: 'Engineering', designation: '' });
   const [projectForm, setProjectForm] = useState<ProjectDetails>({ name: '', budgetCode: '', startDate: '', endDate: '' });
   const [assignForm, setAssignForm] = useState<ProjectAssignment>({
     employeeId: '',
@@ -101,7 +140,7 @@ export default function MasterSheetView({
     remarks: ''
   });
 
-  const targetProj = projects.find(p => p.name === assignForm.projectName);
+
 
   // Searchable select states
   const [empSearch, setEmpSearch] = useState('');
@@ -113,7 +152,9 @@ export default function MasterSheetView({
 
   const uniqueDepts = Array.from(new Set(profiles.map(p => p.department)));
   const uniqueProjects = Array.from(new Set(projects.map(p => p.name)));
-  const statuses = ['Working', 'Leave', 'Travelling'];
+  
+  // Custom dropdown status filter options for employees today status
+  const statuses = ['Working', 'Leave', 'Travelling', 'Standby'];
 
   // Searchable filters with automatic show-all on focus (exact match override)
   const isEmpExactMatch = profiles.some(p => `${p.id} - ${p.name}` === empSearch);
@@ -203,7 +244,7 @@ export default function MasterSheetView({
   const handleOpenAdd = () => {
     setEditingIndex(null);
     if (activeSubTab === 'employees') {
-      setProfileForm({ id: '', name: '', department: 'Engineering', function: '' });
+      setProfileForm({ id: '', name: '', department: 'Engineering', designation: '' });
     } else if (activeSubTab === 'projects') {
       setProjectForm({ name: '', budgetCode: '', startDate: '', endDate: '' });
     } else {
@@ -265,49 +306,18 @@ export default function MasterSheetView({
       }
     } else {
       if (!assignForm.employeeId) return;
-      if (assignForm.status !== 'Leave' && !assignForm.projectName) return;
+      if (!assignForm.projectName) return;
       
       const targetProj = projects.find(p => p.name === assignForm.projectName);
       const rawStart = assignForm.travelStartDate || targetProj?.startDate || '';
       const rawEnd = assignForm.travelEndDate || targetProj?.endDate || '';
+      
       const completeData = {
         ...assignForm,
-        projectName: assignForm.status === 'Leave' ? '' : assignForm.projectName,
+        projectName: assignForm.projectName,
         travelStartDate: normalizeDateString(rawStart),
         travelEndDate: normalizeDateString(rawEnd)
       };
-
-      // Check project date bounds validation
-      if (completeData.status !== 'Leave' && targetProj) {
-        const pStart = targetProj.startDate;
-        const pEnd = targetProj.endDate;
-        const tStart = completeData.travelStartDate;
-        const tEnd = completeData.travelEndDate;
-        
-        if (tStart < pStart || tEnd > pEnd) {
-          alert(`Validation Error: Travel dates (${tStart} to ${tEnd}) fall outside of the Project bounds (${pStart} to ${pEnd}) for '${targetProj.name}'. Travel dates must be within project bounds!`);
-          return;
-        }
-      }
-
-      // Check overlapping date validation for same employee
-      const newStart = completeData.travelStartDate;
-      const newEnd = completeData.travelEndDate;
-      if (newStart && newEnd) {
-        const overlappingAssign = assignments.find((a, idx) => {
-          if (editingIndex !== null && idx === editingIndex) return false;
-          if (a.employeeId !== completeData.employeeId) return false;
-          // Overlap check formula: (StartA <= EndB) and (EndA >= StartB)
-          return (newStart <= a.travelEndDate) && (newEnd >= a.travelStartDate);
-        });
-
-        if (overlappingAssign) {
-          const empName = profiles.find(p => p.id === completeData.employeeId)?.name || 'Employee';
-          const projText = overlappingAssign.projectName ? `project '${overlappingAssign.projectName}'` : 'Leave';
-          alert(`Validation Error: ${empName} (${completeData.employeeId}) is already assigned to ${projText} from ${overlappingAssign.travelStartDate} to ${overlappingAssign.travelEndDate}. Double-booking is not allowed!`);
-          return;
-        }
-      }
 
       if (editingIndex !== null) {
         editAssignment(editingIndex, completeData);
@@ -353,33 +363,12 @@ export default function MasterSheetView({
         const imported = await importFromExcel(file);
         if (confirm(`Do you want to import and normalize ${imported.length} rows of assignments?`)) {
           const newAssignments: ProjectAssignment[] = [];
-          let overlapError = "";
 
           for (let i = 0; i < imported.length; i++) {
             const emp = imported[i];
             const start = emp.travelStartDate || emp.projectStartDate;
             const end = emp.travelEndDate || emp.projectEndDate;
             
-            // Check project date bounds validation
-            if (emp.status !== 'Leave') {
-              const pStart = emp.projectStartDate;
-              const pEnd = emp.projectEndDate;
-              if (start < pStart || end > pEnd) {
-                overlapError = `Row ${i + 2}: Travel dates (${start} to ${end}) for Employee '${emp.name}' (${emp.id}) fall outside Project '${emp.project}' duration bounds (${pStart} to ${pEnd}).`;
-                break;
-              }
-            }
-
-            // Check overlap against assignments already added in this import session
-            const overlap = newAssignments.find(a => 
-              a.employeeId === emp.id && (start <= a.travelEndDate) && (end >= a.travelStartDate)
-            );
-
-            if (overlap) {
-              overlapError = `Row ${i + 2}: Employee '${emp.name}' (${emp.id}) has overlapping assignments between '${emp.project}' [${start} to ${end}] and '${overlap.projectName}' [${overlap.travelStartDate} to ${overlap.travelEndDate}].`;
-              break;
-            }
-
             newAssignments.push({
               employeeId: emp.id,
               projectName: emp.project,
@@ -390,104 +379,84 @@ export default function MasterSheetView({
             });
           }
 
-          if (overlapError) {
-            alert(`Excel Import Blocked due to Double-Booking Violations:\n\n${overlapError}\n\nPlease resolve conflicts and try again.`);
-            return;
-          }
-
           // Import into Firestore
           let addedAss = 0;
-          for (let i = 0; i < imported.length; i++) {
-            const emp = imported[i];
-            const start = emp.travelStartDate || emp.projectStartDate;
-            const end = emp.travelEndDate || emp.projectEndDate;
-
-            // 1. Profile mapping
-            if (!profiles.some(p => p.id === emp.id)) {
-              addProfile({ id: emp.id, name: emp.name, department: emp.department, function: emp.function });
-            }
-            // 2. Project mapping
-            if (!projects.some(p => p.name.toLowerCase() === emp.project.toLowerCase())) {
-              addProject({ name: emp.project, budgetCode: emp.budgetCode, startDate: emp.projectStartDate, endDate: emp.projectEndDate });
-            }
-            // 3. Assignment mapping
-            addAssignment({
-              employeeId: emp.id,
-              projectName: emp.project,
-              travelStartDate: start,
-              travelEndDate: end,
-              status: emp.status,
-              remarks: emp.remarks
-            });
+          for (let i = 0; i < newAssignments.length; i++) {
+            await addAssignment(newAssignments[i]);
             addedAss++;
           }
-          alert(`Successfully imported ${addedAss} assignments (and associated staff/projects)!`);
+          alert(`Successfully imported ${addedAss} staff assignments!`);
         }
       }
     } catch (err: any) {
-      alert("Error importing Excel: " + err.message);
+      alert(`Import error: ${err.message || err}`);
+    }
+
+    // Reset file input
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const triggerUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleExportClick = () => {
+    if (hasValidationErrors) {
+      alert("❌ Export blocked: Please resolve outstanding data quality errors before exporting.");
+      return;
+    }
+    if (validationSummary.warningsCount > 0) {
+      const confirmProceed = confirm(
+        `⚠️ There are ${validationSummary.warningsCount} active warning(s) in your data. Do you want to proceed with database backup export?`
+      );
+      if (!confirmProceed) return;
+    }
+    exportDatabaseToExcel(profiles, projects, assignments);
+  };
+
+  const handleExportConsolidated = () => {
+    if (hasValidationErrors) {
+      alert("❌ Export blocked: Please resolve outstanding data quality errors before exporting.");
+      return;
+    }
+    setIsExportModalOpen(true);
+  };
+
+  const performConsolidatedExport = () => {
+    if (validationSummary.warningsCount > 0) {
+      const confirmProceed = confirm(
+        `⚠️ There are ${validationSummary.warningsCount} active warning(s) in your data. Do you want to proceed with generating the consolidated Excel workbook?`
+      );
+      if (!confirmProceed) return;
+    }
+    setIsExportModalOpen(false);
+    exportConsolidatedReportToExcel(
+      assignments,
+      profiles,
+      projects,
+      leaves,
+      exportStartDate,
+      exportEndDate
+    );
+  };
+
+  const handleFixIssue = (issue: ValidationIssue) => {
+    if (issue.recordType === 'Employee') {
+      setActiveSubTab('employees');
+      setSearch(issue.employeeId || issue.employeeName || '');
+    } else if (issue.recordType === 'Project') {
+      setActiveSubTab('projects');
+      setSearch(issue.projectName || '');
+    } else if (issue.recordType === 'Assignment') {
+      setActiveSubTab('assignments');
+      setSearch(issue.employeeId || '');
+    } else if (issue.recordType === 'Leave') {
+      setActiveSubTab('assignments');
+      setSearch(issue.employeeId || '');
     }
   };
 
-  const handleExcelExport = async () => {
-    const currentMonth = format(new Date(), 'yyyy-MM');
-    await exportToExcel(employees, attendance, manualLeaves, currentMonth);
-  };
-
-  const handleDownloadTemplate = async () => {
-    if (activeSubTab === 'employees') {
-      await downloadExcelTemplate(['Employee ID', 'Employee Name', 'Department', 'Function'], 'Employees_Template.xlsx');
-    } else if (activeSubTab === 'projects') {
-      await downloadExcelTemplate(['Project Name', 'Budget Code', 'Start Date', 'End Date'], 'Projects_Template.xlsx');
-    } else {
-      await downloadExcelTemplate([
-        'Employee ID', 'Employee Name', 'Project', 'Budget Code', 
-        'Project Start Date', 'Project End Date', 'Travel Start Date', 'Travel End Date', 
-        'Status', 'Remarks'
-      ], 'Assignments_Template.xlsx');
-    }
-  };
-
-  // Status Badge Class
-  const getStatusBadgeClass = (status: string) => {
-    switch (status) {
-      case 'Working': return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400';
-      case 'Leave': return 'bg-zinc-100 text-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-400';
-      case 'Travelling': return 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400';
-      default: return 'bg-slate-100 text-slate-800';
-    }
-  };
-
-  // Render assignments list
-  const getFilteredAssignments = () => {
-    const todayStr = format(new Date(), 'yyyy-MM-dd');
-    return getMergedAssignments().map((a, idx) => ({ data: a, index: idx })).filter(({ data }) => {
-      const matchesSearch = 
-        data.name.toLowerCase().includes(search.toLowerCase()) ||
-        data.id.toLowerCase().includes(search.toLowerCase()) ||
-        data.project.toLowerCase().includes(search.toLowerCase()) ||
-        data.department.toLowerCase().includes(search.toLowerCase()) ||
-        data.function.toLowerCase().includes(search.toLowerCase());
-
-      const matchesDept = !deptFilter || data.department === deptFilter;
-      const matchesProject = !projectFilter || data.project === projectFilter;
-      const matchesStatus = !statusFilter || data.status === statusFilter;
-
-      let matchesToday = true;
-      if (activeTodayOnly) {
-        const start = data.travelStartDate;
-        const end = data.travelEndDate;
-        if (start && end) {
-          matchesToday = todayStr >= start && todayStr <= end;
-        } else {
-          matchesToday = false;
-        }
-      }
-
-      return matchesSearch && matchesDept && matchesProject && matchesStatus && matchesToday;
-    });
-  };
-
+  // Status mapping for Employees
   const getTodayStatus = (prof: EmployeeProfile) => {
     const todayStr = format(new Date(), 'yyyy-MM-dd');
 
@@ -495,35 +464,8 @@ export default function MasterSheetView({
     const att = attendance[`${prof.id}_${todayStr}`];
     if (att) return att;
 
-    // 2. Manual Leave
-    const isManualLeave = manualLeaves.some((l: any) => l.employeeId === prof.id && l.date === todayStr);
-    if (isManualLeave) return 'L';
-
-    // 3. Project / Travel Assignments active today
-    const empAssignments = assignments.filter(a => a.employeeId === prof.id);
-    for (const a of empAssignments) {
-      const foundProj = projects.find(p => p.name === a.projectName);
-      const startStr = a.travelStartDate || foundProj?.startDate || '';
-      const endStr = a.travelEndDate || foundProj?.endDate || '';
-      if (startStr && endStr) {
-        const start = new Date(startStr);
-        const end = new Date(endStr);
-        const today = new Date(todayStr);
-        if (today >= start && today <= end) {
-          if (a.status === 'Leave') return 'L';
-          if (a.status === 'Travelling') return 'T';
-          
-          // First day & Last day are Travel (T) for 'Working' status
-          if (startStr === todayStr || endStr === todayStr) {
-            return 'T';
-          }
-          return 'W';
-        }
-      }
-    }
-
-    // 4. Default: Not Assigned (Absent today)
-    return 'A';
+    // 2. Resolve based on assignments, projects and manual leaves
+    return resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves);
   };
 
   const getFilteredEmployees = () => {
@@ -531,20 +473,22 @@ export default function MasterSheetView({
       const matchesSearch = !search || 
         data.name.toLowerCase().includes(search.toLowerCase()) ||
         data.id.toLowerCase().includes(search.toLowerCase()) ||
-        data.function.toLowerCase().includes(search.toLowerCase()) ||
+        data.designation.toLowerCase().includes(search.toLowerCase()) ||
         data.department.toLowerCase().includes(search.toLowerCase());
-
+      
       const matchesDept = !deptFilter || data.department === deptFilter;
 
       let matchesStatus = true;
       if (statusFilter) {
-        const todayStatus = getTodayStatus(data); // 'W' | 'T' | 'L' | 'A' | 'H' | 'HD'
+        const todayStatus = getTodayStatus(data);
         if (statusFilter === 'Working') {
-          matchesStatus = todayStatus === 'W' || todayStatus === 'HD';
+          matchesStatus = todayStatus === 'W';
         } else if (statusFilter === 'Travelling') {
           matchesStatus = todayStatus === 'T';
         } else if (statusFilter === 'Leave') {
-          matchesStatus = todayStatus === 'L' || todayStatus === 'H';
+          matchesStatus = todayStatus === 'L';
+        } else if (statusFilter === 'Standby') {
+          matchesStatus = todayStatus === 'S';
         }
       }
 
@@ -552,51 +496,325 @@ export default function MasterSheetView({
     });
   };
 
-  const filteredAssigns = getFilteredAssignments();
+  const getFilteredAssignments = () => {
+    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    return assignments.map((a, idx) => ({ data: a, index: idx })).filter(({ data }) => {
+      const prof = profiles.find(p => p.id === data.employeeId);
+      const name = prof?.name || '';
+      const dept = prof?.department || '';
+
+      const matchesSearch = !search ||
+        name.toLowerCase().includes(search.toLowerCase()) ||
+        data.employeeId.toLowerCase().includes(search.toLowerCase()) ||
+        data.projectName.toLowerCase().includes(search.toLowerCase()) ||
+        data.remarks.toLowerCase().includes(search.toLowerCase());
+
+      const matchesDept = !deptFilter || dept === deptFilter;
+      const matchesProject = !projectFilter || data.projectName === projectFilter;
+      
+      let matchesStatus = true;
+      if (statusFilter) {
+        if (statusFilter === 'Working') {
+          matchesStatus = data.status === 'Working';
+        } else if (statusFilter === 'Leave') {
+          matchesStatus = data.status === 'Leave';
+        } else if (statusFilter === 'Travelling') {
+          matchesStatus = data.status === 'Travelling';
+        } else {
+          matchesStatus = false;
+        }
+      }
+
+      let matchesToday = true;
+      if (activeTodayOnly) {
+        const targetProj = projects.find(p => p.name === data.projectName);
+        const start = data.travelStartDate || targetProj?.startDate;
+        const end = data.travelEndDate || targetProj?.endDate;
+        if (start && end) {
+          matchesToday = todayStr >= start && todayStr <= end;
+        } else {
+          matchesToday = false;
+        }
+      }
+
+      // Filter by custom date range overlap
+      const targetProj = projects.find(p => p.name === data.projectName);
+      const start = data.travelStartDate || targetProj?.startDate;
+      const end = data.travelEndDate || targetProj?.endDate;
+      let matchesDateRange = true;
+      if (start && end) {
+        matchesDateRange = !(end < startDateStr || start > endDateStr);
+      }
+
+      return matchesSearch && matchesDept && matchesProject && matchesStatus && matchesToday && matchesDateRange;
+    });
+  };
+
   const filteredEmployeesList = getFilteredEmployees();
+  
+  // Transform mapped array to Employee for compatibility
+  const filteredAssigns = getFilteredAssignments().map(x => {
+    const prof = profiles.find(p => p.id === x.data.employeeId);
+    const projDetails = projects.find(p => p.name === x.data.projectName);
+    return {
+      index: x.index,
+      data: {
+        id: x.data.employeeId,
+        name: prof?.name || 'Unknown',
+        department: prof?.department || 'Unknown',
+        designation: prof?.designation || 'Unknown',
+        project: x.data.projectName,
+        projectStartDate: projDetails?.startDate || '',
+        projectEndDate: projDetails?.endDate || '',
+        travelStartDate: x.data.travelStartDate,
+        travelEndDate: x.data.travelEndDate,
+        status: x.data.status,
+        remarks: x.data.remarks
+      }
+    };
+  });
+
+  const getFilteredProjects = () => {
+    return projects.map((p, idx) => ({ data: p, index: idx })).filter(({ data }) => {
+      const matchesSearch = !search ||
+        data.name.toLowerCase().includes(search.toLowerCase()) ||
+        data.budgetCode.toLowerCase().includes(search.toLowerCase());
+
+      return matchesSearch;
+    });
+  };
+
+  const getStatusBadgeClass = (status: string) => {
+    switch (status) {
+      case 'Working':
+      case 'Work':
+      case 'W': return 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400';
+      case 'Travelling':
+      case 'Travel':
+      case 'T': return 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400';
+      case 'Leave':
+      case 'L': return 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-400';
+      case 'Standby':
+      case 'S': return 'bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400';
+      default: return 'bg-slate-100 text-slate-800 dark:bg-slate-850 dark:text-slate-400';
+    }
+  };
 
   return (
     <div className="space-y-6">
-      {/* Header Buttons */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      {/* Tab Header with Stats */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">Master Sheet</h1>
           <p className="text-slate-500 dark:text-slate-400">
-            Separately manage employees and projects, then assign and link them together.
+            Unified management of Staff Project Allocations, Profiles, and Master Database configurations.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <input type="file" ref={fileInputRef} onChange={handleExcelImport} accept=".xlsx,.xls" className="hidden" />
+
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Template template */}
           <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl shadow-sm text-slate-700 dark:text-slate-300 transition-colors"
+            onClick={downloadExcelTemplate}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-600 dark:text-slate-400 rounded-xl transition-all shadow-sm cursor-pointer"
           >
-            <Upload className="w-4 h-4" />
+            Template
+          </button>
+
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleExcelImport} 
+            className="hidden" 
+            accept=".xlsx, .xls"
+          />
+          <button
+            onClick={triggerUploadClick}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 rounded-xl transition-all shadow-sm cursor-pointer"
+          >
+            <Upload className="w-3.5 h-3.5" />
             Import Excel
           </button>
+
           <button 
-            onClick={handleDownloadTemplate}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl shadow-sm text-slate-700 dark:text-slate-300 transition-colors"
+            onClick={() => setShowValidationPanel(!showValidationPanel)}
+            className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all shadow-md cursor-pointer ${
+              hasValidationErrors 
+                ? 'bg-red-600 hover:bg-red-700 text-white animate-pulse'
+                : validationSummary.warningsCount > 0
+                ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+            }`}
           >
-            <Download className="w-4 h-4 text-brand-500" />
-            Download Template
+            Validate Data 🔍 
+            {hasValidationErrors && <span className="ml-1 px-1.5 py-0.5 text-[9px] bg-red-800 text-white rounded-full">{validationSummary.errorsCount}</span>}
           </button>
-          <button 
-            onClick={handleExcelExport}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl shadow-sm text-slate-700 dark:text-slate-300 transition-colors"
+
+          <button
+            disabled={hasValidationErrors}
+            onClick={handleExportConsolidated}
+            className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all shadow-md ${
+              hasValidationErrors
+                ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed opacity-60'
+                : 'bg-teal-600 hover:bg-teal-700 text-white cursor-pointer'
+            }`}
           >
-            <Download className="w-4 h-4" />
-            Export Excel
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Consolidated Excel
           </button>
+
+          <button
+            disabled={hasValidationErrors}
+            onClick={handleExportClick}
+            className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all shadow-md ${
+              hasValidationErrors
+                ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed opacity-60'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+            }`}
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export Database
+          </button>
+
           <button
             onClick={handleOpenAdd}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-xl shadow-md transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold bg-brand-600 hover:bg-brand-700 text-white rounded-xl shadow-md transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            {activeSubTab === 'employees' ? 'Add Employee' : (activeSubTab === 'projects' ? 'Add Project' : 'Add Assignment')}
+            {activeSubTab === 'employees' ? 'Add Profile' : (activeSubTab === 'projects' ? 'Add Project' : 'New Assignment')}
           </button>
         </div>
       </div>
+
+      {/* Validation Summary Panel */}
+      {showValidationPanel && (
+        <div className="glass-panel p-6 rounded-2xl shadow-md border border-slate-200 dark:border-slate-800 space-y-4 animate-in slide-in-from-top duration-200">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                <span>Roster & Planning Data Quality Check</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">Automatic verification of employee IDs, project ranges, overlaps, and attendance consistency.</p>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              {validationSummary.issues.some(issue => 
+                issue.recordType === 'Attendance' && 
+                issue.message.includes('Attendance status mismatch')
+              ) && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (confirm("Are you sure you want to automatically align all manual attendance records to match their expected system statuses? This will resolve all mismatch warnings.")) {
+                      try {
+                        const count = await autoAlignMismatches();
+                        alert(`Success: Successfully aligned ${count} mismatched attendance record(s).`);
+                      } catch (err) {
+                        console.error("Failed to auto-align mismatches:", err);
+                        alert("Error: Failed to auto-align attendance records.");
+                      }
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-xl shadow-md transition-all cursor-pointer mr-1 animate-pulse"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Auto-Align Mismatches ⚡
+                </button>
+              )}
+              <button
+                onClick={() => exportValidationReportToExcel(validationSummary.issues)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-600 dark:text-slate-455 rounded-xl transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Validation Excel Report
+              </button>
+              <button 
+                onClick={() => setShowValidationPanel(false)}
+                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* KPI grid counts */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-200/60 dark:border-slate-800/40 text-center">
+              <div className="text-xs font-semibold text-slate-400">Total Checked</div>
+              <div className="text-xl font-extrabold text-slate-700 dark:text-slate-200 mt-1">
+                🔍 {validationSummary.totalRecordsChecked}
+              </div>
+            </div>
+            <div className="p-3 bg-emerald-50/40 dark:bg-emerald-950/10 rounded-xl border border-emerald-100 dark:border-emerald-900/30 text-center">
+              <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">Valid Records</div>
+              <div className="text-xl font-extrabold text-emerald-700 dark:text-emerald-300 mt-1">
+                ✅ {validationSummary.validRecordsCount}
+              </div>
+            </div>
+            <div className="p-3 bg-amber-50/40 dark:bg-amber-950/10 rounded-xl border border-amber-100 dark:border-amber-900/30 text-center">
+              <div className="text-xs font-semibold text-amber-600 dark:text-amber-400">Active Warnings</div>
+              <div className="text-xl font-extrabold text-amber-700 dark:text-amber-300 mt-1">
+                ⚠️ {validationSummary.warningsCount}
+              </div>
+            </div>
+            <div className="p-3 bg-red-50/40 dark:bg-red-950/10 rounded-xl border border-red-100 dark:border-red-900/30 text-center">
+              <div className="text-xs font-semibold text-red-600 dark:text-red-400">Critical Errors</div>
+              <div className="text-xl font-extrabold text-red-700 dark:text-red-300 mt-1">
+                ❌ {validationSummary.errorsCount}
+              </div>
+            </div>
+          </div>
+
+          {/* Validation report list of issues */}
+          <div className="max-h-72 overflow-y-auto pr-1 space-y-2">
+            {validationSummary.issues.length === 0 ? (
+              <div className="p-4 bg-emerald-50/20 border border-emerald-200 dark:border-emerald-950/30 rounded-xl text-center text-sm font-semibold text-emerald-600 dark:text-emerald-450">
+                ✅ All database integrity tests passed successfully! No errors or warnings found.
+              </div>
+            ) : (
+              validationSummary.issues.map(issue => {
+                const isError = issue.severity === 'Error';
+                return (
+                  <div
+                    key={issue.id}
+                    onClick={() => {
+                      handleFixIssue(issue);
+                      setShowValidationPanel(false);
+                    }}
+                    className={`flex items-start justify-between p-3 rounded-xl border transition-all cursor-pointer ${
+                      isError
+                        ? 'bg-red-50/30 hover:bg-red-50/50 dark:bg-red-950/5 dark:hover:bg-red-950/10 border-red-200/50 dark:border-red-900/30'
+                        : 'bg-amber-50/30 hover:bg-amber-50/50 dark:bg-amber-950/5 dark:hover:bg-amber-950/10 border-amber-200/50 dark:border-amber-900/30'
+                    }`}
+                  >
+                    <div className="space-y-1 pr-4">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                          isError
+                            ? 'bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-400'
+                            : 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400'
+                        }`}>
+                          {issue.severity}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{issue.recordType}</span>
+                      </div>
+                      <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 leading-relaxed">
+                        {issue.message}
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
+                        💡 Suggested Fix: {issue.resolution}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-bold text-brand-600 hover:text-brand-700 shrink-0 self-center hover:underline">
+                      Fix Record &rarr;
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Database Tabs switcher */}
       <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl shadow-inner self-start w-fit">
@@ -635,28 +853,53 @@ export default function MasterSheetView({
         </button>
       </div>
 
-      {/* Filters Card (Only for assignments or employees lists) */}
-      {(activeSubTab === 'assignments' || activeSubTab === 'employees') && (
-        <div className="glass-panel p-4 rounded-2xl shadow-sm flex flex-col lg:flex-row gap-4 items-center justify-between border border-slate-200 dark:border-slate-800">
-          <div className="relative w-full lg:w-96">
+      {/* Filters Card */}
+      <div className="glass-panel p-4 rounded-2xl shadow-sm flex flex-col lg:flex-row gap-4 items-center justify-between border border-slate-200 dark:border-slate-800">
+        <div className="flex flex-wrap items-center gap-4 w-full lg:w-auto">
+          <div className="relative w-full lg:w-72">
             <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
               <Search className="w-4 h-4" />
             </span>
             <input
               type="text"
-              placeholder={activeSubTab === 'assignments' ? "Search by Employee, Project, ID..." : "Search by Employee Name, ID, Function..."}
+              placeholder={
+                activeSubTab === 'assignments' ? "Search assignments..." :
+                activeSubTab === 'employees' ? "Search employees..." : "Search projects..."
+              }
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-sm focus:outline-none transition-colors"
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto justify-end">
-            <div className="flex items-center gap-1.5 text-slate-500">
-              <Filter className="w-4 h-4" />
-              <span className="text-xs font-semibold uppercase tracking-wider">Filters:</span>
+          {/* Date Range Selector */}
+          {activeSubTab === 'assignments' && (
+            <div className="flex items-center gap-2.5 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-xl border border-transparent text-xs font-semibold">
+              <span className="text-slate-400 uppercase text-[9px] tracking-wider font-bold">Range:</span>
+              <input
+                type="date"
+                value={startDateStr}
+                onChange={e => setStartDateStr(e.target.value)}
+                className="bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-350 cursor-pointer w-24 text-[11px]"
+              />
+              <span className="text-slate-400 font-bold">to</span>
+              <input
+                type="date"
+                value={endDateStr}
+                onChange={e => setEndDateStr(e.target.value)}
+                className="bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-350 cursor-pointer w-24 text-[11px]"
+              />
             </div>
-            
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto justify-end">
+          <div className="flex items-center gap-1.5 text-slate-500">
+            <Filter className="w-4 h-4" />
+            <span className="text-xs font-semibold uppercase tracking-wider">Filters:</span>
+          </div>
+          
+          {(activeSubTab === 'assignments' || activeSubTab === 'employees') && (
             <select
               value={deptFilter}
               onChange={e => setDeptFilter(e.target.value)}
@@ -665,41 +908,52 @@ export default function MasterSheetView({
               <option value="">All Departments</option>
               {uniqueDepts.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
+          )}
 
-            {activeSubTab === 'assignments' && (
-              <>
-                <select
-                  value={projectFilter}
-                  onChange={e => setProjectFilter(e.target.value)}
-                  className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
-                >
-                  <option value="">All Projects</option>
-                  {uniqueProjects.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
+          {activeSubTab === 'assignments' && (
+            <>
+              <select
+                value={projectFilter}
+                onChange={e => setProjectFilter(e.target.value)}
+                className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
+              >
+                <option value="">All Projects</option>
+                {uniqueProjects.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
 
-                <select
-                  value={statusFilter}
-                  onChange={e => setStatusFilter(e.target.value)}
-                  className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
-                >
-                  <option value="">All Statuses</option>
-                  {statuses.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value)}
+                className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
+              >
+                <option value="">All Statuses</option>
+                {['Working', 'Leave', 'Travelling'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
 
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer bg-slate-100 dark:bg-slate-900 py-2 px-3 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-800 transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={activeTodayOnly}
-                    onChange={e => setActiveTodayOnly(e.target.checked)}
-                    className="rounded border-slate-300 dark:border-slate-700 text-brand-600 focus:ring-brand-500 w-3.5 h-3.5"
-                  />
-                  Active Today Only
-                </label>
-              </>
-            )}
-          </div>
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer bg-slate-100 dark:bg-slate-900 py-2 px-3 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-800 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={activeTodayOnly}
+                  onChange={e => setActiveTodayOnly(e.target.checked)}
+                  className="rounded border-slate-300 dark:border-slate-700 text-brand-600 focus:ring-brand-500 w-3.5 h-3.5"
+                />
+                Active Today Only
+              </label>
+            </>
+          )}
+
+          {activeSubTab === 'employees' && (
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value)}
+              className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
+            >
+              <option value="">All Statuses Today</option>
+              {statuses.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Main Grid Table */}
       <div className="glass-panel overflow-hidden rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
@@ -711,10 +965,10 @@ export default function MasterSheetView({
                   <th className="py-4 px-6">Emp ID</th>
                   <th className="py-4 px-6">Employee Name</th>
                   <th className="py-4 px-6">Department</th>
-                  <th className="py-4 px-6">Function</th>
+                  <th className="py-4 px-6">Designation</th>
                   <th className="py-4 px-6">Project</th>
-                  <th className="py-4 px-6">Travel Start</th>
-                  <th className="py-4 px-6">Travel End</th>
+                  <th className="py-4 px-6">Start Date</th>
+                  <th className="py-4 px-6">End Date</th>
                   <th className="py-4 px-6">Status</th>
                   <th className="py-4 px-6 text-right">Actions</th>
                 </tr>
@@ -726,14 +980,21 @@ export default function MasterSheetView({
                       <td className="py-3.5 px-6 font-mono font-medium text-slate-600 dark:text-slate-400">{data.id}</td>
                       <td className="py-3.5 px-6 font-semibold text-slate-800 dark:text-white">{data.name}</td>
                       <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{data.department}</td>
-                      <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{data.function}</td>
+                      <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{data.designation}</td>
                       <td className="py-3.5 px-6 font-medium text-slate-700 dark:text-slate-300">{data.project}</td>
-                      <td className="py-3.5 px-6 text-xs font-mono">{data.travelStartDate}</td>
-                      <td className="py-3.5 px-6 text-xs font-mono">{data.travelEndDate}</td>
+                      <td className="py-3.5 px-6 text-xs font-mono">{formatToClientDate(data.travelStartDate)}</td>
+                      <td className="py-3.5 px-6 text-xs font-mono">{formatToClientDate(data.travelEndDate)}</td>
                       <td className="py-3.5 px-6">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${getStatusBadgeClass(data.status)}`}>
-                          {data.status}
-                        </span>
+                        {(() => {
+                          const todayStr = format(new Date(), 'yyyy-MM-dd');
+                          const status = resolveStatusOnDate(data.id, todayStr, assignments, projects, leaves);
+                          const label = status === 'W' ? 'Work' : status === 'T' ? 'Travel' : status === 'L' ? 'Leave' : status === 'S' ? 'Standby' : 'None';
+                          return (
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${getStatusBadgeClass(label)}`}>
+                              {label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="py-3.5 px-6 text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -759,7 +1020,7 @@ export default function MasterSheetView({
                   <th className="py-4 px-6">Employee ID</th>
                   <th className="py-4 px-6">Employee Name</th>
                   <th className="py-4 px-6">Department</th>
-                  <th className="py-4 px-6">Function</th>
+                  <th className="py-4 px-6">Designation</th>
                   <th className="py-4 px-6">Status Today</th>
                   <th className="py-4 px-6 text-right">Actions</th>
                 </tr>
@@ -771,17 +1032,16 @@ export default function MasterSheetView({
                       <td className="py-3.5 px-6 font-mono font-bold text-slate-700 dark:text-slate-300">{p.id}</td>
                       <td className="py-3.5 px-6 font-semibold text-slate-800 dark:text-white">{p.name}</td>
                       <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{p.department}</td>
-                      <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{p.function}</td>
+                      <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{p.designation}</td>
                       <td className="py-3.5 px-6">
                         {(() => {
                           const todayStatus = getTodayStatus(p);
                           switch (todayStatus) {
                             case 'W': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400">Working</span>;
                             case 'T': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400">Travelling</span>;
-                            case 'L': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-400">On Leave</span>;
-                            case 'H': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400">Holiday</span>;
-                            case 'HD': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-100 text-sky-800 dark:bg-sky-950/40 dark:text-sky-400">Half Day</span>;
-                            default: return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-zinc-100 text-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-400">Absent</span>;
+                            case 'L': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-zinc-100 text-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-400">On Leave</span>;
+                            case 'S': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400">Standby</span>;
+                            default: return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 dark:bg-slate-800/60 dark:text-slate-400">-</span>;
                           }
                         })()}
                       </td>
@@ -814,24 +1074,24 @@ export default function MasterSheetView({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
-                {projects.length > 0 ? (
-                  projects.map((p, idx) => (
-                    <tr key={idx} className="hover:bg-slate-100/50 dark:hover:bg-slate-900/20 transition-colors">
-                      <td className="py-3.5 px-6 font-bold text-slate-800 dark:text-white">{p.name}</td>
-                      <td className="py-3.5 px-6 font-mono text-xs text-slate-500 dark:text-slate-400">{p.budgetCode || '-'}</td>
-                      <td className="py-3.5 px-6 font-mono text-xs">{p.startDate}</td>
-                      <td className="py-3.5 px-6 font-mono text-xs">{p.endDate}</td>
+                {getFilteredProjects().length > 0 ? (
+                  getFilteredProjects().map(({ data: p, index }) => (
+                    <tr key={index} className="hover:bg-slate-100/50 dark:hover:bg-slate-900/20 transition-colors">
+                      <td className="py-3.5 px-6 font-semibold text-slate-800 dark:text-white">{p.name}</td>
+                      <td className="py-3.5 px-6 font-mono font-medium text-slate-600 dark:text-slate-400">{p.budgetCode || '-'}</td>
+                      <td className="py-3.5 px-6 text-xs font-mono">{formatToClientDate(p.startDate)}</td>
+                      <td className="py-3.5 px-6 text-xs font-mono">{formatToClientDate(p.endDate)}</td>
                       <td className="py-3.5 px-6 text-right">
                         <div className="flex items-center justify-end gap-2">
-                          <button onClick={() => handleOpenEdit(idx)} className="p-1 hover:text-brand-500 text-slate-400 transition-colors"><Edit className="w-4 h-4" /></button>
-                          <button onClick={() => { if (confirm("Delete project details? This removes active assignments linking to this project.")) deleteProject(idx); }} className="p-1 hover:text-red-500 text-slate-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                          <button onClick={() => handleOpenEdit(index)} className="p-1 hover:text-brand-500 text-slate-400 transition-colors"><Edit className="w-4 h-4" /></button>
+                          <button onClick={() => { if (confirm("Delete project? Doing so will remove all assignments linked to this project.")) deleteProject(index); }} className="p-1 hover:text-red-500 text-slate-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
                         </div>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={5} className="py-8 text-center text-slate-500">No project details defined. Add one above.</td>
+                    <td colSpan={5} className="py-8 text-center text-slate-500">No projects defined or match filters. Add one above.</td>
                   </tr>
                 )}
               </tbody>
@@ -889,12 +1149,12 @@ export default function MasterSheetView({
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Function</label>
+                    <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Designation</label>
                     <input
                       type="text"
                       required
-                      value={profileForm.function}
-                      onChange={e => setProfileForm(p => ({ ...p, function: e.target.value }))}
+                      value={profileForm.designation}
+                      onChange={e => setProfileForm(p => ({ ...p, designation: e.target.value }))}
                       placeholder="Developer"
                       className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
                     />
@@ -980,7 +1240,6 @@ export default function MasterSheetView({
                             const isSelected = idx === activeEmpIdx;
                             return (
                               <div
-                                key={p.id}
                                 onClick={() => {
                                   setAssignForm(prev => ({ ...prev, employeeId: p.id }));
                                   setEmpSearch(`${p.id} - ${p.name}`);
@@ -1008,23 +1267,19 @@ export default function MasterSheetView({
                     <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Select Project Name</label>
                     <input
                       type="text"
-                      value={assignForm.status === 'Leave' ? '' : projSearch}
-                      disabled={editingIndex !== null || assignForm.status === 'Leave'}
-                      placeholder={assignForm.status === 'Leave' ? 'Not applicable for Leaves...' : 'Type project name to search...'}
+                      value={projSearch}
+                      disabled={editingIndex !== null}
+                      placeholder="Type project name to search..."
                       onFocus={() => {
-                        if (assignForm.status !== 'Leave') {
-                          setIsProjOpen(true);
-                          setActiveProjIdx(0);
-                        }
+                        setIsProjOpen(true);
+                        setActiveProjIdx(0);
                       }}
                       onBlur={() => setTimeout(() => setIsProjOpen(false), 250)}
                       onKeyDown={handleProjKeyDown}
                       onChange={e => {
-                        if (assignForm.status !== 'Leave') {
-                          setProjSearch(e.target.value);
-                          setIsProjOpen(true);
-                          setActiveProjIdx(0);
-                        }
+                        setProjSearch(e.target.value);
+                        setIsProjOpen(true);
+                        setActiveProjIdx(0);
                       }}
                       className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500 disabled:opacity-50"
                     />
@@ -1035,7 +1290,6 @@ export default function MasterSheetView({
                             const isSelected = idx === activeProjIdx;
                             return (
                               <div
-                                key={p.name}
                                 onClick={() => {
                                   setAssignForm(prev => ({
                                     ...prev,
@@ -1064,59 +1318,30 @@ export default function MasterSheetView({
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    {/* Travel Start */}
+                    {/* Start Date */}
                     <div>
                       <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-                        {assignForm.status === 'Leave' ? 'Leave Start Date' : 'Travel Start Date'}
+                        Start Date
                       </label>
                       <input
                         type="date"
                         value={assignForm.travelStartDate}
-                        min={assignForm.status === 'Leave' ? undefined : targetProj?.startDate}
-                        max={assignForm.status === 'Leave' ? undefined : targetProj?.endDate}
                         onChange={e => setAssignForm(p => ({ ...p, travelStartDate: e.target.value }))}
                         className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
                       />
                     </div>
-                    {/* Travel End */}
+                    {/* End Date */}
                     <div>
                       <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-                        {assignForm.status === 'Leave' ? 'Leave End Date' : 'Travel End Date'}
+                        End Date
                       </label>
                       <input
                         type="date"
                         value={assignForm.travelEndDate}
-                        min={assignForm.status === 'Leave' ? undefined : targetProj?.startDate}
-                        max={assignForm.status === 'Leave' ? undefined : targetProj?.endDate}
                         onChange={e => setAssignForm(p => ({ ...p, travelEndDate: e.target.value }))}
                         className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
                       />
                     </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Assignment Status</label>
-                    <select
-                      value={assignForm.status}
-                      onChange={e => {
-                        const nextStatus = e.target.value;
-                        setAssignForm(p => {
-                          const next = { ...p, status: nextStatus as any };
-                          if (nextStatus === 'Leave') {
-                            next.projectName = '';
-                          }
-                          return next;
-                        });
-                        if (nextStatus === 'Leave') {
-                          setProjSearch('');
-                        }
-                      }}
-                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500 cursor-pointer"
-                    >
-                      <option value="Working">Working</option>
-                      <option value="Leave">Leave</option>
-                      <option value="Travelling">Travelling</option>
-                    </select>
                   </div>
 
                   <div>
@@ -1148,6 +1373,67 @@ export default function MasterSheetView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Date Range Selection Modal for Consolidated Excel Export */}
+      {isExportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="glass-panel w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-800">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <FileSpreadsheet className="w-5 h-5 text-teal-500" />
+                Select Export Date Range
+              </h3>
+              <button onClick={() => setIsExportModalOpen(false)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-500"><X className="w-5 h-5" /></button>
+            </div>
+            
+            <div className="p-6 space-y-4 text-sm">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Specify the date range period for the consolidated attendance roster spreadsheet.
+              </p>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">From Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={exportStartDate}
+                    onChange={e => setExportStartDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">To Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={exportEndDate}
+                    onChange={e => setExportEndDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsExportModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={performConsolidatedExport}
+                  className="px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-md transition-colors"
+                >
+                  Download Report
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
