@@ -134,35 +134,7 @@ export function validateMasterPlanningData(
     }
   });
 
-  // Overlapping project assignments check
-  profiles.forEach(prof => {
-    const empAssigns = assignments.map((a, idx) => ({ a, idx })).filter(x => x.a.employeeId === prof.id);
-    for (let i = 0; i < empAssigns.length; i++) {
-      for (let j = i + 1; j < empAssigns.length; j++) {
-        const a1 = empAssigns[i].a;
-        const a2 = empAssigns[j].a;
 
-        const p1 = projects.find(p => p.name === a1.projectName);
-        const p2 = projects.find(p => p.name === a2.projectName);
-
-        const s1 = safeParseDate(a1.travelStartDate || p1?.startDate || '');
-        const e1 = safeParseDate(a1.travelEndDate || p1?.endDate || '');
-        const s2 = safeParseDate(a2.travelStartDate || p2?.startDate || '');
-        const e2 = safeParseDate(a2.travelEndDate || p2?.endDate || '');
-
-        if (!isNaN(s1.getTime()) && !isNaN(e1.getTime()) && !isNaN(s2.getTime()) && !isNaN(e2.getTime())) {
-          const overlap = !(e1 < s2 || s1 > e2);
-          if (overlap) {
-            if (a1.projectName === a2.projectName) {
-              addIssue('Error', 'Assignment', `Duplicate assignments detected for employee ${prof.name} (${prof.id}) on Project "${a1.projectName}" during overlapping dates.`, 'Remove one of the duplicate assignments.', { employeeId: prof.id, employeeName: prof.name, recordIndex: empAssigns[i].idx });
-            } else {
-              addIssue('Warning', 'Assignment', `Employee ${prof.name} (${prof.id}) has overlapping project assignments: "${a1.projectName}" and "${a2.projectName}".`, 'Verify date allocations to ensure double allocation is intended.', { employeeId: prof.id, employeeName: prof.name, recordIndex: empAssigns[i].idx });
-            }
-          }
-        }
-      }
-    }
-  });
 
   // 4. Leave Validation
   leaves.forEach((l, idx) => {
@@ -186,9 +158,9 @@ export function validateMasterPlanningData(
     }
   });
 
-  // Overlapping approved leaves check
+  // Overlapping leaves check
   profiles.forEach(prof => {
-    const empLeaves = leaves.map((l, idx) => ({ l, idx })).filter(x => x.l.employeeId === prof.id && x.l.status === 'Approved');
+    const empLeaves = leaves.map((l, idx) => ({ l, idx })).filter(x => x.l.employeeId === prof.id);
     for (let i = 0; i < empLeaves.length; i++) {
       for (let j = i + 1; j < empLeaves.length; j++) {
         const l1 = empLeaves[i].l;
@@ -202,7 +174,7 @@ export function validateMasterPlanningData(
         if (!isNaN(f1.getTime()) && !isNaN(t1.getTime()) && !isNaN(f2.getTime()) && !isNaN(t2.getTime())) {
           const overlap = !(t1 < f2 || f1 > t2);
           if (overlap) {
-            addIssue('Error', 'Leave', `Employee ${prof.name} (${prof.id}) has overlapping approved leave records: (${l1.fromDate} to ${l1.toDate}) and (${l2.fromDate} to ${l2.toDate}).`, 'Reject or delete one of the conflicting leave requests.', { employeeId: prof.id, employeeName: prof.name, recordIndex: empLeaves[i].idx });
+            addIssue('Error', 'Leave', `Employee ${prof.name} (${prof.id}) has overlapping leave records: (${l1.fromDate} to ${l1.toDate}) and (${l2.fromDate} to ${l2.toDate}).`, 'Delete one of the conflicting leave records.', { employeeId: prof.id, employeeName: prof.name, recordIndex: empLeaves[i].idx });
           }
         }
       }

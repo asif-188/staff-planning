@@ -12,12 +12,15 @@ import {
 } from 'lucide-react';
 import { exportAuditLogToExcel } from '../utils/excelHelper';
 
+import type { EmployeeProfile } from '../hooks/usePlanningState';
+
 interface AuditLogViewProps {
   auditLogs: AuditLogEntry[];
   revertChange: (log: AuditLogEntry) => Promise<void>;
+  profiles: EmployeeProfile[];
 }
 
-export default function AuditLogView({ auditLogs, revertChange }: AuditLogViewProps) {
+export default function AuditLogView({ auditLogs, revertChange, profiles }: AuditLogViewProps) {
   const [operatorName, setOperatorName] = useState(() => {
     return localStorage.getItem('v2_active_operator_name') || 'HR Administrator';
   });
@@ -95,9 +98,22 @@ export default function AuditLogView({ auditLogs, revertChange }: AuditLogViewPr
     if (!log.oldValue && !log.newValue) return <span className="text-xs text-slate-400 italic">No value data available</span>;
 
     const renderValGrid = (obj: any) => {
+      let displayObj = { ...obj };
+      if (displayObj.employeeId) {
+        const empName = profiles.find(p => p.id === displayObj.employeeId)?.name || 'Unknown';
+        const reordered: any = {};
+        for (const [k, v] of Object.entries(displayObj)) {
+          reordered[k] = v;
+          if (k === 'employeeId') {
+            reordered['employeeName'] = empName;
+          }
+        }
+        displayObj = reordered;
+      }
+
       return (
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs pt-1.5">
-          {Object.entries(obj || {}).map(([key, val]) => {
+          {Object.entries(displayObj).map(([key, val]) => {
             const displayVal = val === null || val === undefined || val === '' ? '-' : String(val);
             const formattedKey = key
               .replace(/([A-Z])/g, ' $1')
@@ -139,10 +155,18 @@ export default function AuditLogView({ auditLogs, revertChange }: AuditLogViewPr
 
       if (changes.length === 0) return <span className="text-xs text-slate-400 italic">No visible property edits.</span>;
 
+      const empId = newObj.employeeId || oldObj.employeeId;
+      const empName = empId ? (profiles.find(p => p.id === empId)?.name || '') : '';
+
       return (
         <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50/40 dark:bg-slate-900/20 text-xs">
-          <div className="bg-slate-100 dark:bg-slate-800/80 px-3 py-1.5 font-bold text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
-            Edits & Field Comparisons
+          <div className="bg-slate-100 dark:bg-slate-800/80 px-3 py-1.5 font-bold text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center flex-wrap gap-2">
+            <span>Edits & Field Comparisons</span>
+            {empName && (
+              <span className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 rounded-lg text-[10px] font-extrabold uppercase tracking-wide border border-indigo-100 dark:border-indigo-900/30">
+                Employee: {empName} ({empId})
+              </span>
+            )}
           </div>
           <div className="p-3 space-y-2">
             {changes.map(k => (

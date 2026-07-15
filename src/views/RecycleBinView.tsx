@@ -91,7 +91,7 @@ export default function RecycleBinView({
                   } else if (item.type === 'assignment') {
                     summary = `Project: ${item.data?.projectName} | Employee: ${item.data?.employeeId} | Travel: ${formatToClientDate(item.data?.travelStartDate)} to ${formatToClientDate(item.data?.travelEndDate)}`;
                   } else if (item.type === 'leave') {
-                    summary = `Employee: ${item.data?.employeeName} | Dates: ${formatToClientDate(item.data?.fromDate)} to ${formatToClientDate(item.data?.toDate)} | Type: ${item.data?.leaveType}`;
+                    summary = `Employee: ${item.data?.employeeName} | Dates: ${formatToClientDate(item.data?.fromDate)} to ${formatToClientDate(item.data?.toDate)} | Project ID: ${item.data?.projectId}`;
                   }
 
                   return (

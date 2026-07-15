@@ -64,10 +64,8 @@ export interface LeaveRecord {
   employeeName: string;
   fromDate: string; // YYYY-MM-DD
   toDate: string; // YYYY-MM-DD
-  leaveType: string;
   remarks: string;
-  status: 'Pending' | 'Approved' | 'Rejected';
-  projectName?: string;
+  projectId: string; // Project ID
 }
 
 export interface RecycleBinItem {
@@ -397,7 +395,8 @@ export function usePlanningState() {
   const addAssignment = async (a: ProjectAssignment) => {
     const docRef = doc(collection(db, 'staff_assignments'));
     await setDoc(docRef, a);
-    await logChange('create', 'assignment', docRef.id, null, a, `Created assignment for employee ${a.employeeId} on project ${a.projectName}`);
+    const empName = profiles.find(p => p.id === a.employeeId)?.name || 'Unknown';
+    await logChange('create', 'assignment', docRef.id, null, a, `Created assignment for employee ${empName} (${a.employeeId}) on project ${a.projectName}`);
   };
 
   const editAssignment = async (index: number, updated: ProjectAssignment) => {
@@ -405,7 +404,8 @@ export function usePlanningState() {
     if (oldAssignment && (oldAssignment as any).id) {
       const docId = (oldAssignment as any).id;
       await setDoc(doc(db, 'staff_assignments', docId), updated);
-      await logChange('update', 'assignment', docId, oldAssignment, updated, `Updated assignment for employee ${updated.employeeId} on project ${updated.projectName}`);
+      const empName = profiles.find(p => p.id === updated.employeeId)?.name || 'Unknown';
+      await logChange('update', 'assignment', docId, oldAssignment, updated, `Updated assignment for employee ${empName} (${updated.employeeId}) on project ${updated.projectName}`);
     }
   };
 
@@ -433,7 +433,8 @@ export function usePlanningState() {
 
       batch.delete(doc(db, 'staff_assignments', docId));
       await batch.commit();
-      await logChange('delete', 'assignment', docId, oldAssignment, null, `Deleted assignment for employee ${oldAssignment.employeeId} on project ${oldAssignment.projectName}`);
+      const empName = profiles.find(p => p.id === oldAssignment.employeeId)?.name || 'Unknown';
+      await logChange('delete', 'assignment', docId, oldAssignment, null, `Deleted assignment for employee ${empName} (${oldAssignment.employeeId}) on project ${oldAssignment.projectName}`);
     }
   };
 
@@ -518,25 +519,14 @@ export function usePlanningState() {
           employeeName: oldVal.employeeName,
           fromDate: oldVal.fromDate,
           toDate: oldVal.toDate,
-          leaveType: oldVal.leaveType,
           remarks: oldVal.remarks,
-          status: oldVal.status,
-          projectName: oldVal.projectName || ''
+          projectId: oldVal.projectId || ''
         },
         deletedAt: new Date().toISOString()
       });
       batch.delete(doc(db, 'staff_leaves', id));
       await batch.commit();
-      await logChange('delete', 'leave', id, oldVal, null, `Deleted leave request for ${oldVal.employeeName}`);
-    }
-  };
-
-  const approveLeaveStatus = async (id: string, status: 'Pending' | 'Approved' | 'Rejected') => {
-    const oldVal = leaves.find(x => x.id === id);
-    if (oldVal) {
-      await setDoc(doc(db, 'staff_leaves', id), { status }, { merge: true });
-      const newVal = { ...oldVal, status };
-      await logChange('update', 'leave', id, oldVal, newVal, `Updated leave status to ${status} for ${oldVal.employeeName}`);
+      await logChange('delete', 'leave', id, oldVal, null, `Deleted leave record for ${oldVal.employeeName}`);
     }
   };
 
@@ -625,18 +615,18 @@ export function usePlanningState() {
 
     // Add sample employee profiles
     const sampleProfiles = [
-      { id: 'EMP001', name: 'John Doe', department: 'Engineering', function: 'Frontend Developer' },
-      { id: 'EMP002', name: 'Jane Smith', department: 'Product', function: 'Product Manager' },
-      { id: 'EMP003', name: 'Alice Johnson', department: 'Engineering', function: 'DevOps Engineer' },
-      { id: 'EMP004', name: 'Bob Brown', department: 'Design', function: 'UI/UX Designer' },
-      { id: 'EMP005', name: 'Charlie Green', department: 'QA', function: 'QA Lead' }
+      { id: 'EMP001', name: 'John Doe', department: 'Engineering', designation: 'Frontend Developer' },
+      { id: 'EMP002', name: 'Jane Smith', department: 'Product', designation: 'Product Manager' },
+      { id: 'EMP003', name: 'Alice Johnson', department: 'Engineering', designation: 'DevOps Engineer' },
+      { id: 'EMP004', name: 'Bob Brown', department: 'Design', designation: 'UI/UX Designer' },
+      { id: 'EMP005', name: 'Charlie Green', department: 'QA', designation: 'QA Lead' }
     ];
 
     sampleProfiles.forEach(p => {
       batch.set(doc(db, 'staff_profiles', p.id), {
         name: p.name,
         department: p.department,
-        function: p.function
+        designation: p.designation
       });
     });
 
@@ -710,27 +700,24 @@ export function usePlanningState() {
         employeeName: 'John Doe',
         fromDate: formatDate(new Date(today.getTime() + 15 * 24 * 60 * 60 * 1000)),
         toDate: formatDate(new Date(today.getTime() + 20 * 24 * 60 * 60 * 1000)),
-        leaveType: 'Annual',
-        remarks: 'Visiting family',
-        status: 'Approved' as const
+        projectId: 'Project Phoenix',
+        remarks: 'Visiting family'
       },
       {
         employeeId: 'EMP004',
         employeeName: 'Bob Brown',
         fromDate: formatDate(today),
         toDate: formatDate(new Date(today.getTime() + 5 * 24 * 60 * 60 * 1000)),
-        leaveType: 'Sick',
-        remarks: 'Medical recovery',
-        status: 'Approved' as const
+        projectId: 'None',
+        remarks: 'Medical recovery'
       },
       {
         employeeId: 'EMP005',
         employeeName: 'Charlie Green',
         fromDate: formatDate(new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000)),
         toDate: formatDate(new Date(today.getTime() + 6 * 24 * 60 * 60 * 1000)),
-        leaveType: 'Casual',
-        remarks: 'Personal errands',
-        status: 'Pending' as const
+        projectId: 'Project Phoenix',
+        remarks: 'Personal errands'
       }
     ];
 
@@ -816,7 +803,6 @@ export function usePlanningState() {
     addLeave,
     editLeave,
     deleteLeave,
-    approveLeaveStatus,
     addProject,
     editProject,
     deleteProject,

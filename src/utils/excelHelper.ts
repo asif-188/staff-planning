@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import type { Employee, LeaveRecord, EmployeeProfile, ProjectDetails, ProjectAssignment } from '../hooks/usePlanningState';
-import { getDatesForInterval, resolveStatusOnDate, formatToClientDate, safeParseDate } from './timelineHelper';
+import { getDatesForInterval, resolveStatusOnDate, formatToClientDate, safeParseDate, normalizeDateString } from './timelineHelper';
 import { format } from 'date-fns';
 
 // Helper to get color code fill for Planning and Attendance cells
@@ -32,9 +32,11 @@ const getStatusFontColor = (status: string) => {
 export async function exportAvailabilityReportToExcel(
   results: {
     employee: Employee;
-    freeRanges: { startStr: string; endStr: string }[];
+    freeRange: { startStr: string; endStr: string; daysCount: number };
     totalFreeDays: number;
     occupiedDetails: string;
+    workingDetails: string;
+    leaveDetails: string;
   }[],
   startDate: string,
   endDate: string
@@ -43,7 +45,7 @@ export async function exportAvailabilityReportToExcel(
   const sheet = workbook.addWorksheet('Availability Report');
 
   // Title block
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
   titleCell.value = `Availability Finder Report (Period: ${startDate} to ${endDate})`;
   titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
@@ -65,7 +67,8 @@ export async function exportAvailabilityReportToExcel(
     'Designation',
     'Available Periods (in Range)',
     'Total Standby Days',
-    'Allocation Status / Details'
+    'Working Details',
+    'Leave Details'
   ]);
   
   const headerRow = sheet.getRow(3);
@@ -85,18 +88,19 @@ export async function exportAvailabilityReportToExcel(
   sheet.getColumn(4).width = 20;
   sheet.getColumn(5).width = 40;
   sheet.getColumn(6).width = 18;
-  sheet.getColumn(7).width = 35;
+  sheet.getColumn(7).width = 45;
+  sheet.getColumn(8).width = 45;
 
   results.forEach(res => {
-    const rangeText = res.freeRanges.map(r => `${r.startStr} to ${r.endStr}`).join(', ');
     sheet.addRow([
       res.employee.id,
       res.employee.name,
       res.employee.department,
       res.employee.designation,
-      rangeText,
+      `${res.freeRange.startStr} to ${res.freeRange.endStr}`,
       `${res.totalFreeDays} Days`,
-      res.occupiedDetails
+      res.workingDetails,
+      res.leaveDetails
     ]);
   });
 
@@ -105,12 +109,8 @@ export async function exportAvailabilityReportToExcel(
     const row = sheet.getRow(r);
     row.getCell(5).font = { color: { argb: '166534' }, bold: true }; // Green text
     row.getCell(6).font = { color: { argb: '1E40AF' }, bold: true }; // Blue text
-    const statusVal = row.getCell(7).value?.toString();
-    if (statusVal === 'Standby') {
-      row.getCell(7).font = { color: { argb: 'C2410C' }, bold: true }; // Orange text
-    } else {
-      row.getCell(7).font = { color: { argb: '475569' } };
-    }
+    row.getCell(7).font = { color: { argb: '475569' } };
+    row.getCell(8).font = { color: { argb: '475569' } };
   }
 
   // Write and Save
@@ -120,6 +120,102 @@ export async function exportAvailabilityReportToExcel(
   const a = document.createElement('a');
   a.href = url;
   a.download = `Availability_Report_${startDate}_to_${endDate}.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function exportLeaveReportToExcel(
+  leaves: LeaveRecord[],
+  profiles: EmployeeProfile[],
+  projects: ProjectDetails[],
+  startDate: string,
+  endDate: string
+) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Leave Report');
+
+  // Title Block
+  sheet.mergeCells('A1:I1');
+  const titleCell = sheet.getCell('A1');
+  titleCell.value = `Leave Management Report (Period: ${formatToClientDate(startDate)} to ${formatToClientDate(endDate)})`;
+  titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
+  titleCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'E11D48' } // Rose red for Leave branding
+  };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  sheet.getRow(1).height = 40;
+
+  sheet.addRow([]);
+
+  // Column headers
+  sheet.addRow([
+    'Employee ID',
+    'Employee Name',
+    'Department',
+    'Designation',
+    'Project Name',
+    'Project ID',
+    'Leave Start Date',
+    'Leave End Date',
+    'Remarks'
+  ]);
+
+  const headerRow = sheet.getRow(3);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFF' } };
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'E11D48' } // Rose red
+  };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'left' };
+  headerRow.height = 25;
+
+  sheet.getColumn(1).width = 15;
+  sheet.getColumn(2).width = 25;
+  sheet.getColumn(3).width = 20;
+  sheet.getColumn(4).width = 20;
+  sheet.getColumn(5).width = 25;
+  sheet.getColumn(6).width = 15;
+  sheet.getColumn(7).width = 18;
+  sheet.getColumn(8).width = 18;
+  sheet.getColumn(9).width = 30;
+
+  // Filter leaves that overlap with the selected range
+  const rangeStart = normalizeDateString(startDate);
+  const rangeEnd = normalizeDateString(endDate);
+
+  const activeLeaves = leaves.filter(l => {
+    const lFrom = normalizeDateString(l.fromDate);
+    const lTo = normalizeDateString(l.toDate);
+    if (!lFrom || !lTo) return false;
+    return !(lTo < rangeStart || lFrom > rangeEnd);
+  });
+
+  activeLeaves.forEach(l => {
+    const prof = profiles.find(p => p.id === l.employeeId);
+    const proj = projects.find(p => p.name === l.projectId);
+    sheet.addRow([
+      l.employeeId,
+      l.employeeName,
+      prof?.department || '-',
+      prof?.designation || '-',
+      l.projectId || 'None',
+      proj?.budgetCode || '-',
+      formatToClientDate(l.fromDate),
+      formatToClientDate(l.toDate),
+      l.remarks || ''
+    ]);
+  });
+
+  // Write and Save
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Leave_Report_${startDate}_to_${endDate}.xlsx`;
   a.click();
   window.URL.revokeObjectURL(url);
 }
@@ -136,8 +232,11 @@ export async function exportDatabaseToExcel(
   sheet.getColumn(1).width = 25; // Department
   sheet.getColumn(2).width = 15; // Employee ID
   sheet.getColumn(3).width = 30; // Name
-  sheet.getColumn(4).width = 25; // Function / Designation
-
+  sheet.getColumn(4).width = 25; // Designation
+  
+  // Columns E and onwards width will be dynamically set by projects
+  // ...
+  
   // Write static title headers in columns A-D
   sheet.mergeCells('A1:D1');
   const title1 = sheet.getCell('A1');
@@ -151,11 +250,11 @@ export async function exportDatabaseToExcel(
   title2.font = { bold: true, size: 10, italic: true };
   title2.alignment = { horizontal: 'center', vertical: 'middle' };
 
-  // Row 4: A4: 'Department', B4: 'Employee ID', C4: 'Name', D4: 'Function'
+  // Row 4: A4: 'Department', B4: 'Employee ID', C4: 'Name', D4: 'Designation'
   sheet.getCell('A4').value = 'Department';
   sheet.getCell('B4').value = 'Employee ID';
   sheet.getCell('C4').value = 'Name';
-  sheet.getCell('D4').value = 'Function';
+  sheet.getCell('D4').value = 'Designation';
   
   for (let c = 1; c <= 4; c++) {
     sheet.getCell(4, c).font = { bold: true };
@@ -277,11 +376,11 @@ export async function exportDatabaseToExcel(
   window.URL.revokeObjectURL(url);
 }
 
-// 2. Export Dashboard Reports (Leave list, Standby list, Leave Balance = 0)
+// 2. Export Dashboard Reports (Leave list, Standby list)
 export async function exportDashboardToExcel(
   onLeave: any[],
   standbyList: any[],
-  zeroBalance: any[],
+  _zeroBalance: any[], // kept for backward signature compatibility, unused
   startDate: string,
   endDate: string
 ) {
@@ -292,6 +391,7 @@ export async function exportDashboardToExcel(
   leaveSheet.columns = [
     { header: 'Employee ID', key: 'id', width: 15 },
     { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Designation', key: 'designation', width: 20 },
     { header: 'Project', key: 'project', width: 25 },
     { header: 'Leave Period', key: 'leavePeriod', width: 30 },
     { header: 'Remarks', key: 'remarks', width: 30 }
@@ -303,6 +403,7 @@ export async function exportDashboardToExcel(
     leaveSheet.addRow({
       id: item.id,
       name: item.name,
+      designation: item.designation || '',
       project: item.project,
       leavePeriod: item.leavePeriod,
       remarks: item.remarks
@@ -314,6 +415,7 @@ export async function exportDashboardToExcel(
   standbySheet.columns = [
     { header: 'Employee ID', key: 'id', width: 15 },
     { header: 'Employee Name', key: 'name', width: 25 },
+    { header: 'Designation', key: 'designation', width: 20 },
     { header: 'Last Project', key: 'lastProject', width: 25 },
     { header: 'Standby Period', key: 'standbyPeriod', width: 25 },
     { header: 'Standby Days Count', key: 'standbyDaysCount', width: 20 }
@@ -322,22 +424,14 @@ export async function exportDashboardToExcel(
   standbySheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F97316' } }; // Orange
 
   standbyList.forEach(item => {
-    standbySheet.addRow(item);
-  });
-
-  // Tab 3: Leave Balance = 0
-  const zeroSheet = workbook.addWorksheet('Leave Balance = 0');
-  zeroSheet.columns = [
-    { header: 'Employee ID', key: 'id', width: 15 },
-    { header: 'Employee Name', key: 'name', width: 25 },
-    { header: 'Department', key: 'department', width: 20 },
-    { header: 'Leaves Taken (Days)', key: 'leavesTaken', width: 20 }
-  ];
-  zeroSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
-  zeroSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'EF4444' } }; // Red
-
-  zeroBalance.forEach(item => {
-    zeroSheet.addRow(item);
+    standbySheet.addRow({
+      id: item.id,
+      name: item.name,
+      designation: item.designation || '',
+      lastProject: item.lastProject,
+      standbyPeriod: item.standbyPeriod,
+      standbyDaysCount: item.standbyDaysCount
+    });
   });
 
   // Save File
@@ -361,16 +455,6 @@ export async function exportPlanningGridToExcel(
   endDate: string
 ) {
   const workbook = new ExcelJS.Workbook();
-  const getActiveProjectOnDate = (employeeId: string, dateStr: string) => {
-    const match = assignments.find(a => {
-      if (a.employeeId !== employeeId) return false;
-      const proj = projects.find(p => p.name === a.projectName);
-      const start = a.travelStartDate || proj?.startDate || '';
-      const end = a.travelEndDate || proj?.endDate || '';
-      return dateStr >= start && dateStr <= end;
-    });
-    return match ? match.projectName : '';
-  };
 
   // ==================== SHEET 1: Planning Grid ====================
   const planningSheet = workbook.addWorksheet('Planning Grid');
@@ -379,8 +463,9 @@ export async function exportPlanningGridToExcel(
   // Set column widths
   planningSheet.getColumn(1).width = 28; // Employee Name (A)
   planningSheet.getColumn(2).width = 22; // Designation / Function (B)
+  planningSheet.getColumn(3).width = 25; // Remarks (C)
   for (let i = 0; i < dates.length; i++) {
-    planningSheet.getColumn(3 + i).width = 4.5; // Timeline dates start at Column 3 (C)
+    planningSheet.getColumn(4 + i).width = 4.5; // Timeline dates start at Column 4 (D)
   }
 
   let nextRow = 1;
@@ -398,9 +483,12 @@ export async function exportPlanningGridToExcel(
     // Write BUDGET - Project Name header
     const r1 = planningSheet.getRow(nextRow);
     r1.getCell(1).value = 'BUDGET - Project Name';
-    r1.getCell(1).font = { bold: true, color: { argb: '10B981' } }; // Green font
+    r1.getCell(1).font = { bold: true, color: { argb: 'FFFFFF' } }; // White font
+    r1.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Premium Navy Blue
     r1.getCell(2).value = project.name;
     r1.getCell(2).font = { bold: true };
+    r1.getCell(3).value = project.budgetCode || '';
+    r1.getCell(3).font = { bold: true };
 
     // Write Budget Code
     const r2 = planningSheet.getRow(nextRow + 1);
@@ -408,32 +496,54 @@ export async function exportPlanningGridToExcel(
     r2.getCell(2).font = { bold: true };
     r2.getCell(2).alignment = { horizontal: 'center' };
 
-    // Write Row 4: Name, Designation, and project dates overlay
+    // Write Row 4: Name, Designation, Remarks
     const r4 = planningSheet.getRow(nextRow + 3);
     r4.getCell(1).value = 'Name';
     r4.getCell(1).font = { bold: true };
+    r4.getCell(1).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
     r4.getCell(2).value = 'Designation';
     r4.getCell(2).font = { bold: true };
-
-    const startClientDate = formatToClientDate(project.startDate);
-    r4.getCell(3).value = startClientDate;
+    r4.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+    r4.getCell(3).value = 'Remarks';
     r4.getCell(3).font = { bold: true };
-    r4.getCell(3).alignment = { horizontal: 'center' };
+    r4.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
 
-    r4.getCell(4).value = 'Project End Dat';
-    r4.getCell(4).font = { bold: true };
-    r4.getCell(4).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF00' } }; // Yellow
-    r4.getCell(4).alignment = { horizontal: 'center' };
+    // Set Column C labels for timeline headers
+    planningSheet.getRow(nextRow + 2).getCell(3).value = 'Days';
+    planningSheet.getRow(nextRow + 2).getCell(3).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 2).getCell(3).alignment = { horizontal: 'center' };
 
-    const endClientDate = formatToClientDate(project.endDate);
-    r4.getCell(5).value = endClientDate;
-    r4.getCell(5).font = { bold: true };
-    r4.getCell(5).alignment = { horizontal: 'center' };
+    planningSheet.getRow(nextRow + 1).getCell(3).value = 'Week';
+    planningSheet.getRow(nextRow + 1).getCell(3).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 1).getCell(3).alignment = { horizontal: 'center' };
+
+    planningSheet.getRow(nextRow).getCell(3).value = 'Date';
+    planningSheet.getRow(nextRow).getCell(3).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow).getCell(3).alignment = { horizontal: 'center' };
+
+    // Set Project Start and End in columns A and B of Row 3 (nextRow + 2)
+    const r3 = planningSheet.getRow(nextRow + 2);
+    
+    r3.getCell(1).value = `Project Start - ${formatToClientDate(project.startDate)}`;
+    r3.getCell(1).font = { bold: true, size: 10 };
+    r3.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '92D050' } }; // Excel Lime Green
+    r3.getCell(1).border = {
+      bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+      right: { style: 'thin', color: { argb: 'CBD5E1' } }
+    };
+
+    r3.getCell(2).value = `Project End - ${formatToClientDate(project.endDate)}`;
+    r3.getCell(2).font = { bold: true, size: 10 };
+    r3.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '92D050' } }; // Excel Lime Green
+    r3.getCell(2).border = {
+      bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+      right: { style: 'thin', color: { argb: 'CBD5E1' } }
+    };
 
     // Day numbers header (Row 3 of this block)
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
-      const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
+      const colIdx = 4 + idx;
+      const dayCell = r3.getCell(colIdx);
       dayCell.value = parseInt(d.dayNum, 10);
       dayCell.alignment = { horizontal: 'center' };
       dayCell.font = { size: 9, bold: true };
@@ -449,21 +559,19 @@ export async function exportPlanningGridToExcel(
       };
 
       // Border style for empty Row 4 timeline cells
-      if (colIdx > 5) {
-        const cell4 = r4.getCell(colIdx);
-        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
-        cell4.border = {
-          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
-          right: { style: 'thin', color: { argb: 'CBD5E1' } }
-        };
-      }
+      const cell4 = r4.getCell(colIdx);
+      cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cell4.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
     });
 
     // Merge and write Week start dates in Row 1 & Week Numbers in Row 2
     let currentWeekNum = -1;
     let weekStartCol = -1;
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
+      const colIdx = 4 + idx;
       if (d.weekNum !== currentWeekNum) {
         if (weekStartCol !== -1) {
           planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
@@ -476,12 +584,12 @@ export async function exportPlanningGridToExcel(
       }
     });
     if (weekStartCol !== -1) {
-      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
-      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 4 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 4 + dates.length - 1);
     }
 
     // Set styling for Row 1 & Row 2 timeline cells
-    for (let c = 3; c < 3 + dates.length; c++) {
+    for (let c = 4; c < 4 + dates.length; c++) {
       const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
       const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
 
@@ -534,11 +642,11 @@ export async function exportPlanningGridToExcel(
       deptRow.getCell(1).font = { bold: true, color: { argb: 'FFFFFF' }, size: 10 };
       
       deptRow.height = 20;
-      for (let col = 1; col < 3 + dates.length; col++) {
+      for (let col = 1; col < 4 + dates.length; col++) {
         const cell = deptRow.getCell(col);
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Dark Blue
       }
-      planningSheet.mergeCells(nextRow, 1, nextRow, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow, 1, nextRow, 4 + dates.length - 1);
       nextRow++;
 
       // Write Employees rows
@@ -548,8 +656,11 @@ export async function exportPlanningGridToExcel(
         empRow.getCell(1).value = emp.name;
         empRow.getCell(2).value = emp.designation;
 
+        const assign = assignments.find(a => a.employeeId === emp.id && a.projectName === project.name);
+        empRow.getCell(3).value = assign?.remarks || '';
+
         dates.forEach((d, dIdx) => {
-          const colIdx = 3 + dIdx;
+          const colIdx = 4 + dIdx;
           const cell = empRow.getCell(colIdx);
           
           let cellStatus = '';
@@ -605,11 +716,29 @@ export async function exportPlanningGridToExcel(
     const r4 = planningSheet.getRow(nextRow + 3);
     r4.getCell(1).value = 'Name';
     r4.getCell(1).font = { bold: true };
+    r4.getCell(1).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
     r4.getCell(2).value = 'Designation';
     r4.getCell(2).font = { bold: true };
+    r4.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+    r4.getCell(3).value = 'Remarks';
+    r4.getCell(3).font = { bold: true };
+    r4.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+
+    // Set Column C labels for timeline headers in standby block
+    planningSheet.getRow(nextRow + 2).getCell(3).value = 'Days';
+    planningSheet.getRow(nextRow + 2).getCell(3).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 2).getCell(3).alignment = { horizontal: 'center' };
+
+    planningSheet.getRow(nextRow + 1).getCell(3).value = 'Week';
+    planningSheet.getRow(nextRow + 1).getCell(3).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 1).getCell(3).alignment = { horizontal: 'center' };
+
+    planningSheet.getRow(nextRow).getCell(3).value = 'Date';
+    planningSheet.getRow(nextRow).getCell(3).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow).getCell(3).alignment = { horizontal: 'center' };
 
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
+      const colIdx = 4 + idx;
       const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
       dayCell.value = parseInt(d.dayNum, 10);
       dayCell.alignment = { horizontal: 'center' };
@@ -625,7 +754,7 @@ export async function exportPlanningGridToExcel(
         right: { style: 'thin', color: { argb: 'CBD5E1' } }
       };
 
-      if (colIdx > 5) {
+      if (colIdx > 6) {
         const cell4 = r4.getCell(colIdx);
         cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
         cell4.border = {
@@ -638,7 +767,7 @@ export async function exportPlanningGridToExcel(
     let currentWeekNum = -1;
     let weekStartCol = -1;
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
+      const colIdx = 4 + idx;
       if (d.weekNum !== currentWeekNum) {
         if (weekStartCol !== -1) {
           planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
@@ -651,11 +780,11 @@ export async function exportPlanningGridToExcel(
       }
     });
     if (weekStartCol !== -1) {
-      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
-      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 4 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 4 + dates.length - 1);
     }
 
-    for (let c = 3; c < 3 + dates.length; c++) {
+    for (let c = 4; c < 4 + dates.length; c++) {
       const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
       const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
 
@@ -682,9 +811,10 @@ export async function exportPlanningGridToExcel(
       const empRow = planningSheet.getRow(nextRow);
       empRow.getCell(1).value = emp.name;
       empRow.getCell(2).value = emp.designation;
+      empRow.getCell(3).value = 'Standby';
 
       dates.forEach((d, dIdx) => {
-        const colIdx = 3 + dIdx;
+        const colIdx = 4 + dIdx;
         const cell = empRow.getCell(colIdx);
         const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
 
@@ -705,22 +835,22 @@ export async function exportPlanningGridToExcel(
   }
 
   planningSheet.views = [
-    { state: 'frozen', xSplit: 2, ySplit: 0 }
+    { state: 'frozen', xSplit: 3, ySplit: 0 }
   ];
 
 
-  // ==================== SHEET 2: Summary Details ====================
-  const detailsSheet = workbook.addWorksheet('Sheet 2');
+  // ==================== SHEET 2: Planning Summary ====================
+  const detailsSheet = workbook.addWorksheet('Planning Summary');
   detailsSheet.columns = [
     { header: 'Employee Name', key: 'name', width: 25 },
     { header: 'Department', key: 'department', width: 20 },
     { header: 'Designation', key: 'designation', width: 20 },
-    { header: 'Project', key: 'project', width: 25 },
-    { header: 'Proj Start', key: 'projStart', width: 15 },
-    { header: 'Proj End', key: 'projEnd', width: 15 },
-    { header: 'W', key: 'w', width: 8 },
-    { header: 'L', key: 'l', width: 8 },
-    { header: 'S', key: 's', width: 8 }
+    { header: 'Project Name', key: 'projectName', width: 25 },
+    { header: 'Project Code', key: 'projectCode', width: 15 },
+    { header: 'Allocated Start Date', key: 'projStart', width: 22 },
+    { header: 'Allocated End Date', key: 'projEnd', width: 22 },
+    { header: 'Leave Start Date', key: 'leaveStart', width: 18 },
+    { header: 'Leave End Date', key: 'leaveEnd', width: 18 }
   ];
 
   detailsSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
@@ -732,79 +862,30 @@ export async function exportPlanningGridToExcel(
   detailsSheet.getRow(1).height = 25;
   detailsSheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
 
-  // Helper groupings of Employee + Project assignments (same as original rows grouping)
-  const detailRows: {
-    id: string;
-    name: string;
-    department: string;
-    designation: string;
-    project: string;
-    projectStartDate: string;
-    projectEndDate: string;
-  }[] = [];
-
-  const assignmentKeys = new Set<string>();
   assignments.forEach(a => {
-    const key = `${a.employeeId}_${a.projectName}`;
-    if (!assignmentKeys.has(key)) {
-      assignmentKeys.add(key);
-      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
-      const proj = projects.find(p => p.name === a.projectName);
-      
-      const matchAssigns = assignments.filter(x => x.employeeId === a.employeeId && x.projectName === a.projectName);
-      const startDates = matchAssigns.map(x => x.travelStartDate || proj?.startDate || '').filter(Boolean);
-      const endDates = matchAssigns.map(x => x.travelEndDate || proj?.endDate || '').filter(Boolean);
-      
-      const minStart = startDates.length > 0 ? startDates.reduce((min, d) => d < min ? d : min, startDates[0]) : '';
-      const maxEnd = endDates.length > 0 ? endDates.reduce((max, d) => d > max ? d : max, endDates[0]) : '';
-
-      detailRows.push({
-        id: a.employeeId,
-        name: prof.name,
-        department: prof.department,
-        designation: prof.designation,
-        project: a.projectName,
-        projectStartDate: minStart,
-        projectEndDate: maxEnd
-      });
-    }
-  });
-
-  // Populate details on Sheet 2
-  detailRows.forEach((row) => {
-    // Calculate total counts for this assignment
-    let w = 0, l = 0, s = 0;
-    dates.forEach(d => {
-      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
-      if (status === 'T') {
-        status = 'W';
-      }
-      // Check if project assignment matches this specific project row
-      const activeProj = getActiveProjectOnDate(row.id, d.dateStr);
-      if (activeProj === row.project) {
-        if (status === 'W') w++;
-        else if (status === 'L') l++;
-        else if (status === 'S') s++;
-      } else {
-        // If not working on this project (e.g. Leave / Standby), count it for the row if it's leave/standby
-        if (status === 'L' && row.project === '') l++;
-        else if (status === 'S' && row.project === '') s++;
-      }
-    });
+    const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
+    const proj = projects.find(p => p.name === a.projectName);
+    
+    // Find leaves for this employee on this project that fall within or after this assignment
+    const assocLeave = leaves.find(l => 
+      l.employeeId === a.employeeId && 
+      l.projectId === a.projectName &&
+      l.fromDate >= a.travelStartDate
+    );
 
     const newRow = detailsSheet.addRow({
-      name: row.name,
-      department: row.department,
-      designation: row.designation,
-      project: row.project || '(No Active Project)',
-      projStart: formatToClientDate(row.projectStartDate),
-      projEnd: formatToClientDate(row.projectEndDate),
-      w,
-      l,
-      s
+      name: prof.name,
+      department: prof.department,
+      designation: prof.designation,
+      projectName: a.projectName,
+      projectCode: proj?.budgetCode || '-',
+      projStart: formatToClientDate(a.travelStartDate || ''),
+      projEnd: formatToClientDate(a.travelEndDate || ''),
+      leaveStart: assocLeave ? formatToClientDate(assocLeave.fromDate) : '',
+      leaveEnd: assocLeave ? formatToClientDate(assocLeave.toDate) : ''
     });
 
-    // Center values
+    // Center date values
     for (let c = 5; c <= 9; c++) {
       newRow.getCell(c).alignment = { horizontal: 'center' };
     }
@@ -834,39 +915,87 @@ export async function exportAttendanceToExcel(
   const sheet = workbook.addWorksheet('Attendance');
 
   const dates = getDatesForInterval(startDate, endDate);
-  const totalCols = 9 + dates.length; // 4 info columns, 5 summary columns (W, L, T, S, %)
+  const totalCols = 11 + dates.length; // 6 info columns (including Project Name and Code), 5 summary columns (W, L, T, S, %)
 
-  const getColLetter = (colIndex: number) => {
-    let letter = '';
-    let temp = colIndex;
-    while (temp > 0) {
-      const modulo = (temp - 1) % 26;
-      letter = String.fromCharCode(65 + modulo) + letter;
-      temp = Math.floor((temp - modulo) / 26);
+
+
+  // Row 1 & Row 2: Title Header (Merge A1 to K2)
+  sheet.mergeCells('A1:K2');
+  sheet.getRow(1).height = 25;
+  sheet.getRow(2).height = 20;
+  for (let r = 1; r <= 2; r++) {
+    for (let c = 1; c <= 11; c++) {
+      const cell = sheet.getRow(r).getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Premium Navy Blue
     }
-    return letter;
-  };
-  const lastColLetter = getColLetter(totalCols);
-
-  sheet.mergeCells(`A1:${lastColLetter}1`);
+  }
   const titleCell = sheet.getCell('A1');
   titleCell.value = `Attendance Report (Period: ${formatToClientDate(startDate)} to ${formatToClientDate(endDate)})`;
   titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
-  titleCell.fill = {
-    type: 'pattern',
-    pattern: 'solid',
-    fgColor: { argb: '4F46E5' } // Indigo
-  };
-  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  sheet.getRow(1).height = 40;
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
 
-  sheet.addRow([]);
+  // Group dates by month for merging headers in Row 1 & 2 of the timeline
+  let currentMonthStr = '';
+  let monthStartCol = -1;
+  dates.forEach((d, idx) => {
+    const colIdx = 12 + idx; // Timeline starts at column 12 (L)
+    if (d.monthLabel !== currentMonthStr) {
+      if (monthStartCol !== -1) {
+        sheet.mergeCells(1, monthStartCol, 2, colIdx - 1);
+        const cell = sheet.getCell(1, monthStartCol);
+        cell.value = currentMonthStr;
+        cell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 10 };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        
+        for (let r = 1; r <= 2; r++) {
+          for (let c = monthStartCol; c <= colIdx - 1; c++) {
+            sheet.getCell(r, c).fill = { 
+              type: 'pattern', 
+              pattern: 'solid', 
+              fgColor: { argb: '2563EB' } 
+            };
+            sheet.getCell(r, c).border = {
+              bottom: { style: 'thin', color: { argb: 'FFFFFF' } },
+              right: { style: 'thin', color: { argb: 'FFFFFF' } }
+            };
+          }
+        }
+      }
+      currentMonthStr = d.monthLabel;
+      monthStartCol = colIdx;
+    }
+  });
+
+  if (monthStartCol !== -1) {
+    const lastColIdx = 11 + dates.length;
+    sheet.mergeCells(1, monthStartCol, 2, lastColIdx);
+    const cell = sheet.getCell(1, monthStartCol);
+    cell.value = currentMonthStr;
+    cell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 10 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    for (let r = 1; r <= 2; r++) {
+      for (let c = monthStartCol; c <= lastColIdx; c++) {
+        sheet.getCell(r, c).fill = { 
+          type: 'pattern', 
+          pattern: 'solid', 
+          fgColor: { argb: '2563EB' } 
+        };
+        sheet.getCell(r, c).border = {
+          bottom: { style: 'thin', color: { argb: 'FFFFFF' } },
+          right: { style: 'thin', color: { argb: 'FFFFFF' } }
+        };
+      }
+    }
+  }
 
   const baseHeaders = [
     'Employee ID',
     'Employee Name',
     'Department',
     'Designation',
+    'Project Name',
+    'Project Code',
     'W',
     'L',
     'T',
@@ -909,11 +1038,24 @@ export async function exportAttendanceToExcel(
     const totalScheduled = w + t + l + s;
     const rate = totalScheduled > 0 ? Math.round((activeDays / totalScheduled) * 100) : 100;
 
+    const empAssignments = assignments.filter(a => a.employeeId === prof.id);
+    const activeAss = empAssignments.find(a => {
+      const foundProj = projects.find(p => p.name === a.projectName);
+      const sStr = a.travelStartDate || foundProj?.startDate || '';
+      const eStr = a.travelEndDate || foundProj?.endDate || '';
+      return !(eStr < startDate || sStr > endDate);
+    }) || empAssignments[0];
+    const activeAssName = activeAss?.projectName || 'Unassigned';
+    const foundProj = activeAss ? projects.find(p => p.name === activeAss.projectName) : null;
+    const activeAssCode = foundProj?.budgetCode || '-';
+
     sheet.addRow([
       prof.id,
       prof.name,
       prof.department,
       prof.designation,
+      activeAssName,
+      activeAssCode,
       w,
       l,
       t,
@@ -938,7 +1080,9 @@ export async function exportAttendanceToExcel(
       label,
       '', // Name
       '', // Department
-      '', // Function
+      '', // Designation
+      '', // Project Name
+      '', // Project Code
       '', // W
       '', // L
       '', // T
@@ -950,10 +1094,10 @@ export async function exportAttendanceToExcel(
     row.font = { bold: true, size: 9 };
     row.getCell(1).alignment = { horizontal: 'left' };
     
-    // Merge first 9 columns for the label to look cleaner
-    sheet.mergeCells(row.number, 1, row.number, 9);
+    // Merge first 11 columns for the label to look cleaner
+    sheet.mergeCells(row.number, 1, row.number, 11);
     
-    for (let c = 10; c <= totalCols; c++) {
+    for (let c = 12; c <= totalCols; c++) {
       const cell = row.getCell(c);
       cell.alignment = { horizontal: 'center' };
       cell.fill = {
@@ -972,13 +1116,15 @@ export async function exportAttendanceToExcel(
   sheet.getColumn(2).width = 25;
   sheet.getColumn(3).width = 20;
   sheet.getColumn(4).width = 20;
-  sheet.getColumn(5).width = 6;
-  sheet.getColumn(6).width = 6;
-  sheet.getColumn(7).width = 6;
-  sheet.getColumn(8).width = 6;
-  sheet.getColumn(9).width = 8;
+  sheet.getColumn(5).width = 25; // Project Name
+  sheet.getColumn(6).width = 15; // Project Code
+  sheet.getColumn(7).width = 6;  // W
+  sheet.getColumn(8).width = 6;  // L
+  sheet.getColumn(9).width = 6;  // T
+  sheet.getColumn(10).width = 6; // S
+  sheet.getColumn(11).width = 8; // %
   
-  for (let c = 10; c <= totalCols; c++) {
+  for (let c = 12; c <= totalCols; c++) {
     sheet.getColumn(c).width = 5;
   }
 
@@ -989,9 +1135,9 @@ export async function exportAttendanceToExcel(
 
     for (let c = 1; c <= totalCols; c++) {
       const cell = row.getCell(c);
-      cell.alignment = { vertical: 'middle', horizontal: c <= 4 ? 'left' : 'center' };
+      cell.alignment = { vertical: 'middle', horizontal: c <= 6 ? 'left' : 'center' };
       
-      if (c >= 10) {
+      if (c >= 12) {
         const val = cell.value?.toString();
         if (val === 'W') {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'DCE6F1' } };
@@ -1004,15 +1150,14 @@ export async function exportAttendanceToExcel(
           cell.font = { color: { argb: '000000' }, bold: true, size: 9 };
           
           if (prof) {
-            const dateObj = dates[c - 10];
+            const dateObj = dates[c - 12];
             const lRecord = leaves.find(l => 
               l.employeeId === prof.id &&
-              l.status === 'Approved' &&
               dateObj.dateStr >= l.fromDate &&
               dateObj.dateStr <= l.toDate
             );
             if (lRecord) {
-              cell.note = `Leave Type: ${lRecord.leaveType}\nProject: ${lRecord.projectName || 'None'}\nRemarks: ${lRecord.remarks || 'None'}`;
+              cell.note = `Project ID: ${lRecord.projectId || 'None'}\nRemarks: ${lRecord.remarks || 'None'}`;
             }
           }
         } else if (val === 'S') {
@@ -1028,12 +1173,12 @@ export async function exportAttendanceToExcel(
   leaveSheet.columns = [
     { header: 'Employee ID', key: 'employeeId', width: 15 },
     { header: 'Employee Name', key: 'employeeName', width: 25 },
+    { header: 'Designation', key: 'designation', width: 20 },
     { header: 'Project Name', key: 'projectName', width: 25 },
-    { header: 'Leave From', key: 'fromDate', width: 15 },
-    { header: 'Leave To', key: 'toDate', width: 15 },
-    { header: 'Leave Type', key: 'leaveType', width: 15 },
-    { header: 'Remarks', key: 'remarks', width: 30 },
-    { header: 'Status', key: 'status', width: 15 }
+    { header: 'Project Code', key: 'projectCode', width: 15 },
+    { header: 'Leave Start Date', key: 'fromDate', width: 18 },
+    { header: 'Leave End Date', key: 'toDate', width: 18 },
+    { header: 'Remarks', key: 'remarks', width: 30 }
   ];
 
   leaveSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
@@ -1057,15 +1202,17 @@ export async function exportAttendanceToExcel(
   });
 
   activeLeaves.forEach(l => {
+    const prof = profiles.find(p => p.id === l.employeeId);
+    const proj = projects.find(p => p.name === l.projectId);
     leaveSheet.addRow({
       employeeId: l.employeeId,
       employeeName: l.employeeName,
-      projectName: l.projectName || 'None',
+      designation: prof?.designation || '-',
+      projectName: l.projectId || 'None',
+      projectCode: proj?.budgetCode || '-',
       fromDate: formatToClientDate(l.fromDate),
       toDate: formatToClientDate(l.toDate),
-      leaveType: l.leaveType,
-      remarks: l.remarks || '',
-      status: l.status
+      remarks: l.remarks || ''
     });
   });
 
@@ -1700,8 +1847,8 @@ export async function exportConsolidatedReportToExcel(
   masterSheet.getColumn(1).width = 25; // Department
   masterSheet.getColumn(2).width = 15; // Employee ID
   masterSheet.getColumn(3).width = 30; // Name
-  masterSheet.getColumn(4).width = 25; // Function / Designation
-
+  masterSheet.getColumn(4).width = 25; // Designation
+  
   masterSheet.mergeCells('A1:D1');
   const mTitle1 = masterSheet.getCell('A1');
   mTitle1.value = 'Project STAFF working schedule';
@@ -1717,7 +1864,7 @@ export async function exportConsolidatedReportToExcel(
   masterSheet.getCell('A4').value = 'Department';
   masterSheet.getCell('B4').value = 'Employee ID';
   masterSheet.getCell('C4').value = 'Name';
-  masterSheet.getCell('D4').value = 'Function';
+  masterSheet.getCell('D4').value = 'Designation';
   for (let c = 1; c <= 4; c++) {
     masterSheet.getCell(4, c).font = { bold: true };
     masterSheet.getCell(4, c).alignment = { vertical: 'middle' };
@@ -1815,9 +1962,11 @@ export async function exportConsolidatedReportToExcel(
   // ==================== TAB 2: Planning Grid ====================
   const planningSheet = workbook.addWorksheet('Planning Grid');
   planningSheet.getColumn(1).width = 28; // Employee Name (A)
-  planningSheet.getColumn(2).width = 22; // Designation / Function (B)
+  planningSheet.getColumn(2).width = 22; // Designation (B)
+  planningSheet.getColumn(3).width = 25; // Remarks (C)
+  planningSheet.getColumn(4).width = 8;  // Timeline label padding (D)
   for (let i = 0; i < dates.length; i++) {
-    planningSheet.getColumn(3 + i).width = 4.5;
+    planningSheet.getColumn(5 + i).width = 4.5; // Timeline starts from Column 5 (E)
   }
 
   let nextRow = 1;
@@ -1830,40 +1979,71 @@ export async function exportConsolidatedReportToExcel(
     }
 
     const r1 = planningSheet.getRow(nextRow);
-    r1.getCell(1).value = 'BUDGET - Project Name';
-    r1.getCell(1).font = { bold: true, color: { argb: '10B981' } };
-    r1.getCell(2).value = project.name;
-    r1.getCell(2).font = { bold: true };
+    planningSheet.mergeCells(nextRow, 1, nextRow, 2);
+    const budgetLabelCell = r1.getCell(1);
+    budgetLabelCell.value = 'BUDGET - Project Name';
+    budgetLabelCell.font = { bold: true, color: { argb: 'FFFFFF' } }; // White font
+    budgetLabelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Premium Navy Blue
+    budgetLabelCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    // Fill background of cell B so the merged block is styled correctly
+    r1.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
+    
+    r1.getCell(3).value = project.name;
+    r1.getCell(3).font = { bold: true };
+    r1.getCell(3).alignment = { vertical: 'middle' };
 
     const r2 = planningSheet.getRow(nextRow + 1);
-    r2.getCell(2).value = project.budgetCode || '';
-    r2.getCell(2).font = { bold: true };
-    r2.getCell(2).alignment = { horizontal: 'center' };
+    r2.getCell(3).value = project.budgetCode || '';
+    r2.getCell(3).font = { bold: true };
+    r2.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
 
     const r4 = planningSheet.getRow(nextRow + 3);
     r4.getCell(1).value = 'Name';
     r4.getCell(1).font = { bold: true };
+    r4.getCell(1).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
     r4.getCell(2).value = 'Designation';
     r4.getCell(2).font = { bold: true };
-
-    const startClientDate = formatToClientDate(project.startDate);
-    r4.getCell(3).value = startClientDate;
+    r4.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+    r4.getCell(3).value = 'Remarks';
     r4.getCell(3).font = { bold: true };
-    r4.getCell(3).alignment = { horizontal: 'center' };
+    r4.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
 
-    r4.getCell(4).value = 'Project End Dat';
-    r4.getCell(4).font = { bold: true };
-    r4.getCell(4).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF00' } };
-    r4.getCell(4).alignment = { horizontal: 'center' };
+    // Set Column D labels for timeline headers
+    planningSheet.getRow(nextRow + 2).getCell(4).value = 'Days';
+    planningSheet.getRow(nextRow + 2).getCell(4).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 2).getCell(4).alignment = { horizontal: 'center' };
 
-    const endClientDate = formatToClientDate(project.endDate);
-    r4.getCell(5).value = endClientDate;
-    r4.getCell(5).font = { bold: true };
-    r4.getCell(5).alignment = { horizontal: 'center' };
+    planningSheet.getRow(nextRow + 1).getCell(4).value = 'Week';
+    planningSheet.getRow(nextRow + 1).getCell(4).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 1).getCell(4).alignment = { horizontal: 'center' };
+
+    planningSheet.getRow(nextRow).getCell(4).value = 'Date';
+    planningSheet.getRow(nextRow).getCell(4).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow).getCell(4).alignment = { horizontal: 'center' };
+
+    // Set Project Start and End in columns A and B of Row 3 (nextRow + 2)
+    const r3 = planningSheet.getRow(nextRow + 2);
+    
+    r3.getCell(1).value = `Project Start - ${formatToClientDate(project.startDate)}`;
+    r3.getCell(1).font = { bold: true, size: 10 };
+    r3.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '92D050' } }; // Excel Lime Green
+    r3.getCell(1).border = {
+      bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+      right: { style: 'thin', color: { argb: 'CBD5E1' } }
+    };
+
+    r3.getCell(2).value = `Project End - ${formatToClientDate(project.endDate)}`;
+    r3.getCell(2).font = { bold: true, size: 10 };
+    r3.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '92D050' } }; // Excel Lime Green
+    r3.getCell(2).border = {
+      bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+      right: { style: 'thin', color: { argb: 'CBD5E1' } }
+    };
 
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
-      const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
+      const colIdx = 5 + idx;
+      const dayCell = r3.getCell(colIdx);
       dayCell.value = parseInt(d.dayNum, 10);
       dayCell.alignment = { horizontal: 'center' };
       dayCell.font = { size: 9, bold: true };
@@ -1878,20 +2058,18 @@ export async function exportConsolidatedReportToExcel(
         right: { style: 'thin', color: { argb: 'CBD5E1' } }
       };
 
-      if (colIdx > 5) {
-        const cell4 = r4.getCell(colIdx);
-        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
-        cell4.border = {
-          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
-          right: { style: 'thin', color: { argb: 'CBD5E1' } }
-        };
-      }
+      const cell4 = r4.getCell(colIdx);
+      cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cell4.border = {
+        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+        right: { style: 'thin', color: { argb: 'CBD5E1' } }
+      };
     });
 
     let currentWeekNum = -1;
     let weekStartCol = -1;
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
+      const colIdx = 5 + idx;
       if (d.weekNum !== currentWeekNum) {
         if (weekStartCol !== -1) {
           planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
@@ -1904,11 +2082,11 @@ export async function exportConsolidatedReportToExcel(
       }
     });
     if (weekStartCol !== -1) {
-      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
-      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 5 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 5 + dates.length - 1);
     }
 
-    for (let c = 3; c < 3 + dates.length; c++) {
+    for (let c = 5; c < 5 + dates.length; c++) {
       const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
       const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
       cellRow1.font = { bold: true, size: 9 };
@@ -1941,12 +2119,19 @@ export async function exportConsolidatedReportToExcel(
     nextRow += 4;
     Object.keys(groupedByDept).sort().forEach(dept => {
       const deptRow = planningSheet.getRow(nextRow);
+      deptRow.height = 22;
+      const totalGridCols = 4 + dates.length; // 4 summary columns + timeline dates
+      for (let c = 1; c <= totalGridCols; c++) {
+        const cell = deptRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Premium Navy Blue
+        cell.font = { bold: true, color: { argb: 'FFFFFF' } };
+        cell.border = {
+          bottom: { style: 'thin', color: { argb: '1E3A8A' } },
+          right: { style: 'thin', color: { argb: '1E3A8A' } }
+        };
+      }
       deptRow.getCell(1).value = dept;
-      deptRow.getCell(1).font = { bold: true, color: { argb: 'FFFFFF' } };
-      deptRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
-      deptRow.getCell(1).alignment = { horizontal: 'left' };
-      
-      planningSheet.mergeCells(nextRow, 1, nextRow, 3 + dates.length - 1);
+      deptRow.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
       nextRow++;
 
       groupedByDept[dept].forEach(emp => {
@@ -1954,11 +2139,16 @@ export async function exportConsolidatedReportToExcel(
         empRow.getCell(1).value = emp.name;
         empRow.getCell(2).value = emp.designation;
 
+        const assign = assignments.find(a => a.employeeId === emp.id && a.projectName === project.name);
+        const budgetCodeStr = project.budgetCode || '';
+        const assignRemarks = assign?.remarks || '';
+        const combinedRemarks = [budgetCodeStr, assignRemarks].filter(Boolean).join(' - ');
+        empRow.getCell(3).value = combinedRemarks;
+
         dates.forEach((d, dIdx) => {
-          const colIdx = 3 + dIdx;
+          const colIdx = 5 + dIdx;
           const cell = empRow.getCell(colIdx);
           let status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
-          if (status === 'T') status = 'W';
 
           cell.value = status;
           cell.alignment = { horizontal: 'center' };
@@ -1986,11 +2176,29 @@ export async function exportConsolidatedReportToExcel(
     const r4 = planningSheet.getRow(nextRow + 3);
     r4.getCell(1).value = 'Name';
     r4.getCell(1).font = { bold: true };
+    r4.getCell(1).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
     r4.getCell(2).value = 'Designation';
     r4.getCell(2).font = { bold: true };
+    r4.getCell(2).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+    r4.getCell(3).value = 'Remarks';
+    r4.getCell(3).font = { bold: true };
+    r4.getCell(3).border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
+
+    // Set Column D labels for timeline headers in standby block
+    planningSheet.getRow(nextRow + 2).getCell(4).value = 'Days';
+    planningSheet.getRow(nextRow + 2).getCell(4).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 2).getCell(4).alignment = { horizontal: 'center' };
+
+    planningSheet.getRow(nextRow + 1).getCell(4).value = 'Week';
+    planningSheet.getRow(nextRow + 1).getCell(4).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow + 1).getCell(4).alignment = { horizontal: 'center' };
+
+    planningSheet.getRow(nextRow).getCell(4).value = 'Date';
+    planningSheet.getRow(nextRow).getCell(4).font = { bold: true, size: 9 };
+    planningSheet.getRow(nextRow).getCell(4).alignment = { horizontal: 'center' };
 
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
+      const colIdx = 5 + idx;
       const dayCell = planningSheet.getRow(nextRow + 2).getCell(colIdx);
       dayCell.value = parseInt(d.dayNum, 10);
       dayCell.alignment = { horizontal: 'center' };
@@ -2003,17 +2211,15 @@ export async function exportConsolidatedReportToExcel(
       }
       dayCell.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
 
-      if (colIdx > 5) {
-        const cell4 = r4.getCell(colIdx);
-        cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
-        cell4.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
-      }
+      const cell4 = r4.getCell(colIdx);
+      cell4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F8FAFC' } };
+      cell4.border = { bottom: { style: 'thin', color: { argb: 'CBD5E1' } }, right: { style: 'thin', color: { argb: 'CBD5E1' } } };
     });
 
     let currentWeekNum = -1;
     let weekStartCol = -1;
     dates.forEach((d, idx) => {
-      const colIdx = 3 + idx;
+      const colIdx = 5 + idx;
       if (d.weekNum !== currentWeekNum) {
         if (weekStartCol !== -1) {
           planningSheet.mergeCells(nextRow, weekStartCol, nextRow, colIdx - 1);
@@ -2026,11 +2232,11 @@ export async function exportConsolidatedReportToExcel(
       }
     });
     if (weekStartCol !== -1) {
-      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 3 + dates.length - 1);
-      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 3 + dates.length - 1);
+      planningSheet.mergeCells(nextRow, weekStartCol, nextRow, 5 + dates.length - 1);
+      planningSheet.mergeCells(nextRow + 1, weekStartCol, nextRow + 1, 5 + dates.length - 1);
     }
 
-    for (let c = 3; c < 3 + dates.length; c++) {
+    for (let c = 5; c < 5 + dates.length; c++) {
       const cellRow1 = planningSheet.getRow(nextRow).getCell(c);
       const cellRow2 = planningSheet.getRow(nextRow + 1).getCell(c);
       cellRow1.font = { bold: true, size: 9 };
@@ -2049,9 +2255,10 @@ export async function exportConsolidatedReportToExcel(
       const empRow = planningSheet.getRow(nextRow);
       empRow.getCell(1).value = emp.name;
       empRow.getCell(2).value = emp.designation;
+      empRow.getCell(3).value = 'Standby';
 
       dates.forEach((d, dIdx) => {
-        const colIdx = 3 + dIdx;
+        const colIdx = 5 + dIdx;
         const cell = empRow.getCell(colIdx);
         const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
 
@@ -2067,7 +2274,7 @@ export async function exportConsolidatedReportToExcel(
       nextRow++;
     });
   }
-  planningSheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 0 }];
+  planningSheet.views = [{ state: 'frozen', xSplit: 4, ySplit: 0 }];
 
   // ==================== TAB 3: Planning Summary ====================
   const summarySheet = workbook.addWorksheet('Planning Summary');
@@ -2075,12 +2282,12 @@ export async function exportConsolidatedReportToExcel(
     { header: 'Employee Name', key: 'name', width: 25 },
     { header: 'Department', key: 'department', width: 20 },
     { header: 'Designation', key: 'designation', width: 20 },
-    { header: 'Project', key: 'project', width: 25 },
-    { header: 'Proj Start', key: 'projStart', width: 15 },
-    { header: 'Proj End', key: 'projEnd', width: 15 },
-    { header: 'W', key: 'w', width: 8 },
-    { header: 'L', key: 'l', width: 8 },
-    { header: 'S', key: 's', width: 8 }
+    { header: 'Project Name', key: 'projectName', width: 25 },
+    { header: 'Project Code', key: 'projectCode', width: 15 },
+    { header: 'Allocated Start Date', key: 'projStart', width: 22 },
+    { header: 'Allocated End Date', key: 'projEnd', width: 22 },
+    { header: 'Leave Start Date', key: 'leaveStart', width: 18 },
+    { header: 'Leave End Date', key: 'leaveEnd', width: 18 }
   ];
 
   summarySheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
@@ -2088,82 +2295,117 @@ export async function exportConsolidatedReportToExcel(
   summarySheet.getRow(1).height = 25;
   summarySheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
 
-  const summaryRows: {
-    id: string;
-    name: string;
-    department: string;
-    designation: string;
-    project: string;
-    projectStartDate: string;
-    projectEndDate: string;
-  }[] = [];
-
-  const summaryKeysSet = new Set<string>();
   assignments.forEach(a => {
-    const key = `${a.employeeId}_${a.projectName}`;
-    if (!summaryKeysSet.has(key)) {
-      summaryKeysSet.add(key);
-      const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
-      const proj = projects.find(p => p.name === a.projectName);
-      const matchAssigns = assignments.filter(x => x.employeeId === a.employeeId && x.projectName === a.projectName);
-      const startDates = matchAssigns.map(x => x.travelStartDate || proj?.startDate || '').filter(Boolean);
-      const endDates = matchAssigns.map(x => x.travelEndDate || proj?.endDate || '').filter(Boolean);
-      const minStart = startDates.length > 0 ? startDates.reduce((min, d) => d < min ? d : min, startDates[0]) : '';
-      const maxEnd = endDates.length > 0 ? endDates.reduce((max, d) => d > max ? d : max, endDates[0]) : '';
+    const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
+    const proj = projects.find(p => p.name === a.projectName);
+    
+    // Find leaves for this employee on this project that fall within or after this assignment
+    const assocLeave = leaves.find(l => 
+      l.employeeId === a.employeeId && 
+      l.projectId === a.projectName &&
+      l.fromDate >= a.travelStartDate
+    );
 
-      summaryRows.push({
-        id: a.employeeId,
-        name: prof.name,
-        department: prof.department,
-        designation: prof.designation,
-        project: a.projectName,
-        projectStartDate: minStart,
-        projectEndDate: maxEnd
-      });
+    const newRow = summarySheet.addRow({
+      name: prof.name,
+      department: prof.department,
+      designation: prof.designation,
+      projectName: a.projectName,
+      projectCode: proj?.budgetCode || '-',
+      projStart: formatToClientDate(a.travelStartDate || ''),
+      projEnd: formatToClientDate(a.travelEndDate || ''),
+      leaveStart: assocLeave ? formatToClientDate(assocLeave.fromDate) : '',
+      leaveEnd: assocLeave ? formatToClientDate(assocLeave.toDate) : ''
+    });
+
+    // Center values
+    for (let c = 5; c <= 9; c++) {
+      newRow.getCell(c).alignment = { horizontal: 'center' };
     }
-  });
-
-  summaryRows.forEach((row) => {
-    let w = 0, l = 0, s = 0;
-    dates.forEach(d => {
-      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
-      if (status === 'T') status = 'W';
-      if (status === 'W') w++;
-      else if (status === 'L') l++;
-      else if (status === 'S') s++;
-    });
-
-    summarySheet.addRow({
-      name: row.name,
-      department: row.department,
-      designation: row.designation,
-      project: row.project,
-      projStart: formatToClientDate(row.projectStartDate),
-      projEnd: formatToClientDate(row.projectEndDate),
-      w,
-      l,
-      s
-    });
   });
 
   // ==================== TAB 4: Attendance Grid ====================
   const attGridSheet = workbook.addWorksheet('Attendance Grid');
-  const attBaseHeaders = ['Employee ID', 'Employee Name', 'Department', 'Designation', 'W', 'L', 'T', 'S', '%'];
+  const attBaseHeaders = ['Employee ID', 'Employee Name', 'Department', 'Designation', 'Project Name', 'Project Code', 'W', 'L', 'T', 'S', '%'];
   const attDateHeaders = dates.map(d => `${d.dayNum}\n${d.dayLabel[0]}`);
+
+
   
   attGridSheet.getRow(3).values = [...attBaseHeaders, ...attDateHeaders];
   attGridSheet.getRow(3).font = { bold: true, color: { argb: 'FFFFFF' }, size: 9 };
   attGridSheet.getRow(3).height = 28;
 
-  attGridSheet.mergeCells('A1:I1');
-  const attTitleCell = attGridSheet.getCell('A1');
-  attTitleCell.value = 'STAFF PLANNING ATTENDANCE MATRIX';
-  attTitleCell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 14 };
-  attTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
-  attTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  attGridSheet.getRow(1).height = 40;
+  // Row 1 & Row 2: Title Header (Merge A1 to K2)
+  attGridSheet.mergeCells('A1:K2');
+  attGridSheet.getRow(1).height = 25;
+  attGridSheet.getRow(2).height = 20;
+  for (let r = 1; r <= 2; r++) {
+    for (let c = 1; c <= 11; c++) {
+      const cell = attGridSheet.getCell(r, c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } }; // Premium Navy Blue
+    }
+  }
+  const titleCell = attGridSheet.getCell('A1');
+  titleCell.value = `STAFF PLANNING ATTENDANCE MATRIX (Period: ${formatToClientDate(startDate)} to ${formatToClientDate(endDate)})`;
+  titleCell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 14 };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
 
-  for (let c = 1; c <= 9 + dates.length; c++) {
+  // Group dates by month for merging headers in Row 1 & 2 of the timeline
+  let currentMonthStr = '';
+  let monthStartCol = -1;
+  dates.forEach((d, idx) => {
+    const colIdx = 12 + idx; // Timeline starts at column 12 (L)
+    if (d.monthLabel !== currentMonthStr) {
+      if (monthStartCol !== -1) {
+        attGridSheet.mergeCells(1, monthStartCol, 2, colIdx - 1);
+        const cell = attGridSheet.getCell(1, monthStartCol);
+        cell.value = currentMonthStr;
+        cell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 10 };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        
+        for (let r = 1; r <= 2; r++) {
+          for (let c = monthStartCol; c <= colIdx - 1; c++) {
+            attGridSheet.getCell(r, c).fill = { 
+              type: 'pattern', 
+              pattern: 'solid', 
+              fgColor: { argb: '2563EB' } 
+            };
+            attGridSheet.getCell(r, c).border = {
+              bottom: { style: 'thin', color: { argb: 'FFFFFF' } },
+              right: { style: 'thin', color: { argb: 'FFFFFF' } }
+            };
+          }
+        }
+      }
+      currentMonthStr = d.monthLabel;
+      monthStartCol = colIdx;
+    }
+  });
+
+  if (monthStartCol !== -1) {
+    const lastColIdx = 11 + dates.length;
+    attGridSheet.mergeCells(1, monthStartCol, 2, lastColIdx);
+    const cell = attGridSheet.getCell(1, monthStartCol);
+    cell.value = currentMonthStr;
+    cell.font = { bold: true, color: { argb: 'FFFFFF' }, size: 10 };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    for (let r = 1; r <= 2; r++) {
+      for (let c = monthStartCol; c <= lastColIdx; c++) {
+        attGridSheet.getCell(r, c).fill = { 
+          type: 'pattern', 
+          pattern: 'solid', 
+          fgColor: { argb: '2563EB' } 
+        };
+        attGridSheet.getCell(r, c).border = {
+          bottom: { style: 'thin', color: { argb: 'FFFFFF' } },
+          right: { style: 'thin', color: { argb: 'FFFFFF' } }
+        };
+      }
+    }
+  }
+
+  for (let c = 1; c <= 11 + dates.length; c++) {
     const cell = attGridSheet.getRow(3).getCell(c);
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4F46E5' } };
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
@@ -2187,11 +2429,24 @@ export async function exportConsolidatedReportToExcel(
     const totalScheduled = w + t + l + s;
     const rate = totalScheduled > 0 ? Math.round((activeDays / totalScheduled) * 100) : 100;
 
+    const empAssignments = assignments.filter(a => a.employeeId === prof.id);
+    const activeAss = empAssignments.find(a => {
+      const foundProj = projects.find(p => p.name === a.projectName);
+      const sStr = a.travelStartDate || foundProj?.startDate || '';
+      const eStr = a.travelEndDate || foundProj?.endDate || '';
+      return !(eStr < startDate || sStr > endDate);
+    }) || empAssignments[0];
+    const activeAssName = activeAss?.projectName || 'Unassigned';
+    const foundProj = activeAss ? projects.find(p => p.name === activeAss.projectName) : null;
+    const activeAssCode = foundProj?.budgetCode || '-';
+
     attGridSheet.addRow([
       prof.id,
       prof.name,
       prof.department,
       prof.designation,
+      activeAssName,
+      activeAssCode,
       w,
       l,
       t,
@@ -2210,21 +2465,69 @@ export async function exportConsolidatedReportToExcel(
 
   attSummaryKeys.forEach(({ key, label }) => {
     const rowValues = [
-      label, '', '', '', '', '', '', '', '',
+      label, '', '', '', '', '', '', '', '', '', '',
       ...attStatusCounts.map(c => c[key] || 0)
     ];
     const row = attGridSheet.addRow(rowValues);
     row.font = { bold: true, size: 9 };
     row.getCell(1).alignment = { horizontal: 'left' };
-    attGridSheet.mergeCells(row.number, 1, row.number, 9);
+    attGridSheet.mergeCells(row.number, 1, row.number, 11);
   });
 
   attGridSheet.getColumn(1).width = 15;
   attGridSheet.getColumn(2).width = 25;
   attGridSheet.getColumn(3).width = 20;
   attGridSheet.getColumn(4).width = 20;
-  for (let c = 10; c <= 9 + dates.length; c++) {
+  attGridSheet.getColumn(5).width = 25; // Project Name
+  attGridSheet.getColumn(6).width = 15; // Project Code
+  attGridSheet.getColumn(7).width = 6;  // W
+  attGridSheet.getColumn(8).width = 6;  // L
+  attGridSheet.getColumn(9).width = 6;  // T
+  attGridSheet.getColumn(10).width = 6; // S
+  attGridSheet.getColumn(11).width = 8; // %
+  for (let c = 12; c <= 11 + dates.length; c++) {
     attGridSheet.getColumn(c).width = 5;
+  }
+
+  // Apply colors to Attendance Grid cells
+  for (let r = 4; r <= profiles.length + 3; r++) {
+    const row = attGridSheet.getRow(r);
+    row.height = 22;
+    const prof = profiles[r - 4];
+
+    for (let c = 1; c <= 11 + dates.length; c++) {
+      const cell = row.getCell(c);
+      cell.alignment = { vertical: 'middle', horizontal: c <= 6 ? 'left' : 'center' };
+      
+      if (c >= 12) {
+        const val = cell.value?.toString();
+        if (val === 'W') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'DCE6F1' } };
+          cell.font = { color: { argb: '000000' }, bold: true, size: 9 };
+        } else if (val === 'T') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '7C3AED' } };
+          cell.font = { color: { argb: 'FFFFFF' }, bold: true, size: 9 };
+        } else if (val === 'L') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F3E8FF' } };
+          cell.font = { color: { argb: '000000' }, bold: true, size: 9 };
+          
+          if (prof) {
+            const dateObj = dates[c - 12];
+            const lRecord = leaves.find(l => 
+              l.employeeId === prof.id &&
+              dateObj.dateStr >= l.fromDate &&
+              dateObj.dateStr <= l.toDate
+            );
+            if (lRecord) {
+              cell.note = `Project ID: ${lRecord.projectId || 'None'}\nRemarks: ${lRecord.remarks || 'None'}`;
+            }
+          }
+        } else if (val === 'S') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDD5' } };
+          cell.font = { color: { argb: 'C2410C' }, bold: true, size: 9 };
+        }
+      }
+    }
   }
 
   // ==================== TAB 5: Leave Details ====================
@@ -2232,12 +2535,12 @@ export async function exportConsolidatedReportToExcel(
   leaveDetailsSheet.columns = [
     { header: 'Employee ID', key: 'employeeId', width: 15 },
     { header: 'Employee Name', key: 'employeeName', width: 25 },
+    { header: 'Designation', key: 'designation', width: 20 },
     { header: 'Project Name', key: 'projectName', width: 25 },
-    { header: 'Leave From', key: 'fromDate', width: 15 },
-    { header: 'Leave To', key: 'toDate', width: 15 },
-    { header: 'Leave Type', key: 'leaveType', width: 15 },
-    { header: 'Remarks', key: 'remarks', width: 30 },
-    { header: 'Status', key: 'status', width: 15 }
+    { header: 'Project Code', key: 'projectCode', width: 15 },
+    { header: 'Leave Start Date', key: 'fromDate', width: 18 },
+    { header: 'Leave End Date', key: 'toDate', width: 18 },
+    { header: 'Remarks', key: 'remarks', width: 30 }
   ];
 
   leaveDetailsSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
@@ -2255,15 +2558,17 @@ export async function exportConsolidatedReportToExcel(
   });
 
   activeL.forEach(l => {
+    const prof = profiles.find(p => p.id === l.employeeId);
+    const proj = projects.find(p => p.name === l.projectId);
     leaveDetailsSheet.addRow({
       employeeId: l.employeeId,
       employeeName: l.employeeName,
-      projectName: l.projectName || 'None',
+      designation: prof?.designation || '-',
+      projectName: l.projectId || 'None',
+      projectCode: proj?.budgetCode || '-',
       fromDate: formatToClientDate(l.fromDate),
       toDate: formatToClientDate(l.toDate),
-      leaveType: l.leaveType,
-      remarks: l.remarks || '',
-      status: l.status
+      remarks: l.remarks || ''
     });
   });
 

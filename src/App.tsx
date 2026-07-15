@@ -230,7 +230,6 @@ export default function App() {
             addLeave={state.addLeave}
             editLeave={state.editLeave}
             deleteLeave={state.deleteLeave}
-            approveLeaveStatus={state.approveLeaveStatus}
           />
         );
       case 'attendance':
@@ -258,6 +257,7 @@ export default function App() {
           <AuditLogView
             auditLogs={state.auditLogs}
             revertChange={state.revertChange}
+            profiles={state.profiles}
           />
         );
       case 'recycle-bin':
@@ -587,7 +587,7 @@ export default function App() {
         <header className="hidden md:flex items-center justify-between h-16 px-8 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 sticky top-0 z-30 shadow-sm shrink-0">
           <div className="flex items-center">
             <div className="text-sm font-medium text-slate-400">
-              Welcome back, <strong className="text-slate-700 dark:text-slate-200 font-semibold">Saranya</strong>
+              Hi <strong className="text-slate-700 dark:text-slate-200 font-semibold">Saranya</strong>,
             </div>
           </div>
           <div className="flex items-center gap-4">

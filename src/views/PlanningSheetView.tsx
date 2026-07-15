@@ -90,9 +90,19 @@ export default function PlanningSheetView({ profiles, assignments, projects, lea
   const filteredRows = groupedRows.filter(row => {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
+
+    // Find if the budget code of any project matches
+    const matchAssigns = assignments.filter(x => x.employeeId === row.id);
+    const matchesBudgetCode = matchAssigns.some(x => {
+      const proj = projects.find(p => p.name === x.projectName);
+      return (proj?.budgetCode || '').toLowerCase().includes(q);
+    });
+
     return row.name.toLowerCase().includes(q) || 
            row.id.toLowerCase().includes(q) || 
-           row.project.toLowerCase().includes(q);
+           row.project.toLowerCase().includes(q) ||
+           row.department.toLowerCase().includes(q) ||
+           matchesBudgetCode;
   });
 
   const sortedRows = [...filteredRows].sort((a, b) => {

@@ -4,17 +4,15 @@ import {
   Search, 
   Edit2, 
   Trash2, 
-  Check, 
-  X, 
   Calendar, 
   User, 
-  AlertCircle, 
   FileText,
   UserCheck,
-  UserMinus
+  Download
 } from 'lucide-react';
 import type { EmployeeProfile, LeaveRecord, ProjectDetails, ProjectAssignment } from '../hooks/usePlanningState';
 import { formatToClientDate } from '../utils/timelineHelper';
+import { exportLeaveReportToExcel } from '../utils/excelHelper';
 
 interface LeaveManagementViewProps {
   profiles: EmployeeProfile[];
@@ -24,7 +22,6 @@ interface LeaveManagementViewProps {
   addLeave: (l: Omit<LeaveRecord, 'id'>) => Promise<void>;
   editLeave: (id: string, l: Omit<LeaveRecord, 'id'>) => Promise<void>;
   deleteLeave: (id: string) => Promise<void>;
-  approveLeaveStatus: (id: string, status: 'Pending' | 'Approved' | 'Rejected') => Promise<void>;
 }
 
 export default function LeaveManagementView({
@@ -34,14 +31,26 @@ export default function LeaveManagementView({
   assignments,
   addLeave,
   editLeave,
-  deleteLeave,
-  approveLeaveStatus
+  deleteLeave
 }: LeaveManagementViewProps) {
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
-  const [leaveTypeFilter, setLeaveTypeFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
+  const [startDateStr, setStartDateStr] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    return `${yr}-${mo}-01`;
+  });
+  const [endDateStr, setEndDateStr] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const nextMonthDate = new Date(yr, d.getMonth() + 2, 0);
+    const nextYr = nextMonthDate.getFullYear();
+    const nextMo = String(nextMonthDate.getMonth() + 1).padStart(2, '0');
+    const nextLastDay = String(nextMonthDate.getDate()).padStart(2, '0');
+    return `${nextYr}-${nextMo}-${nextLastDay}`;
+  });
 
   // Modals & Forms
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -51,10 +60,8 @@ export default function LeaveManagementView({
   const [formEmployeeId, setFormEmployeeId] = useState('');
   const [formFromDate, setFormFromDate] = useState('');
   const [formToDate, setFormToDate] = useState('');
-  const [formLeaveType, setFormLeaveType] = useState('Annual');
   const [formRemarks, setFormRemarks] = useState('');
-  const [formStatus, setFormStatus] = useState<'Pending' | 'Approved' | 'Rejected'>('Approved');
-  const [formProjectName, setFormProjectName] = useState('None');
+  const [formProjectId, setFormProjectId] = useState('None');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Searchable profile select dropdown state
@@ -74,7 +81,6 @@ export default function LeaveManagementView({
     const overlappingRecord = leaves.find(l => {
       if (editingId && l.id === editingId) return false;
       return l.employeeId === formEmployeeId &&
-             l.status !== 'Rejected' &&
              !(formToDate < l.fromDate || formFromDate > l.toDate);
     });
 
@@ -85,33 +91,40 @@ export default function LeaveManagementView({
     }
   }, [formEmployeeId, formFromDate, formToDate, leaves, editingId]);
 
+  const todayStr = new Date().toISOString().split('T')[0];
+
   // Calculate statistics
   const totalCount = leaves.length;
-  const approvedCount = leaves.filter(l => l.status === 'Approved').length;
-  const pendingCount = leaves.filter(l => l.status === 'Pending').length;
-  const rejectedCount = leaves.filter(l => l.status === 'Rejected').length;
+  const activeTodayCount = leaves.filter(l => todayStr >= l.fromDate && todayStr <= l.toDate).length;
 
   // Filtered leave records
   const filteredLeaves = leaves.filter(l => {
     const prof = profiles.find(p => p.id === l.employeeId);
     
+    // Check overlap with the date range filter
+    const lFrom = l.fromDate;
+    const lTo = l.toDate;
+    const isOverlap = !(lTo < startDateStr || lFrom > endDateStr);
+    if (!isOverlap) return false;
+
     // Search filter
     const q = searchQuery.toLowerCase().trim();
+    const proj = projects.find(p => p.name === l.projectId);
+    const matchesProjOrCode = l.projectId && (
+      l.projectId.toLowerCase().includes(q) ||
+      (proj?.budgetCode || '').toLowerCase().includes(q)
+    );
     const matchQuery = !q || 
       l.employeeId.toLowerCase().includes(q) ||
       l.employeeName.toLowerCase().includes(q) ||
+      (prof?.department || '').toLowerCase().includes(q) ||
+      matchesProjOrCode ||
       l.remarks.toLowerCase().includes(q);
-
-    // Leave type filter
-    const matchType = !leaveTypeFilter || l.leaveType === leaveTypeFilter;
-
-    // Status filter
-    const matchStatus = !statusFilter || l.status === statusFilter;
 
     // Department filter
     const matchDept = !deptFilter || (prof && prof.department === deptFilter);
 
-    return matchQuery && matchType && matchStatus && matchDept;
+    return matchQuery && matchDept;
   });
 
   // Unique departments for filter
@@ -147,10 +160,8 @@ export default function LeaveManagementView({
       employeeName: employee.name,
       fromDate: formFromDate,
       toDate: formToDate,
-      leaveType: formLeaveType,
       remarks: formRemarks,
-      status: formStatus,
-      projectName: formProjectName
+      projectId: formProjectId
     };
 
     setIsSubmitting(true);
@@ -175,10 +186,8 @@ export default function LeaveManagementView({
     setFormEmployeeId('');
     setFormFromDate('');
     setFormToDate('');
-    setFormLeaveType('Annual');
     setFormRemarks('');
-    setFormStatus('Approved');
-    setFormProjectName('None');
+    setFormProjectId('None');
     setEmpSearchQuery('');
     setIsEmpSelectOpen(false);
     setIsSubmitting(false);
@@ -194,10 +203,8 @@ export default function LeaveManagementView({
     setFormEmployeeId(l.employeeId);
     setFormFromDate(l.fromDate);
     setFormToDate(l.toDate);
-    setFormLeaveType(l.leaveType);
     setFormRemarks(l.remarks);
-    setFormStatus(l.status);
-    setFormProjectName(l.projectName || 'None');
+    setFormProjectId(l.projectId || 'None');
     
     const prof = profiles.find(p => p.id === l.employeeId);
     setEmpSearchQuery(prof ? `${prof.name} (${prof.id})` : l.employeeId);
@@ -215,35 +222,6 @@ export default function LeaveManagementView({
     }
   };
 
-  const handleQuickStatusChange = async (id: string, status: 'Pending' | 'Approved' | 'Rejected') => {
-    try {
-      await approveLeaveStatus(id, status);
-    } catch (err) {
-      console.error('Failed to change leave status:', err);
-      alert('Error: Failed to change leave status.');
-    }
-  };
-
-  const getLeaveTypeBadgeClass = (type: string) => {
-    switch (type) {
-      case 'Annual': return 'bg-sky-50 dark:bg-sky-950/20 text-sky-700 dark:text-sky-400 border-sky-100 dark:border-sky-900/20';
-      case 'Sick': return 'bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border-rose-100 dark:border-rose-900/20';
-      case 'Casual': return 'bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 border-amber-100 dark:border-amber-900/20';
-      case 'Maternity': return 'bg-purple-50 dark:bg-purple-950/20 text-purple-700 dark:text-purple-400 border-purple-100 dark:border-purple-900/20';
-      case 'Project': return 'bg-indigo-50 dark:bg-indigo-950/20 text-indigo-700 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/20';
-      case 'Others': return 'bg-teal-50 dark:bg-teal-950/20 text-teal-700 dark:text-teal-400 border-teal-100 dark:border-teal-900/20';
-      default: return 'bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-400 border-slate-200 dark:border-slate-800';
-    }
-  };
-
-  const getStatusBadgeClass = (status: string) => {
-    switch (status) {
-      case 'Approved': return 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border-emerald-100 dark:border-emerald-900/20';
-      case 'Pending': return 'bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 border-amber-100 dark:border-amber-900/20';
-      case 'Rejected': return 'bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border-rose-100 dark:border-rose-900/20';
-      default: return 'bg-slate-50 dark:bg-slate-900 text-slate-700';
-    }
-  };
 
   // Filter profiles list based on searchable selector query
   const filteredProfilesForSelect = profiles.filter(p => {
@@ -273,10 +251,8 @@ export default function LeaveManagementView({
           <Plus className="w-5 h-5" />
           Create Leave
         </button>
-      </div>
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      </div>      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {/* Card 1: Total */}
         <div className="bg-white dark:bg-slate-950 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
           <div className="absolute right-0 top-0 w-24 h-24 bg-brand-500/5 dark:bg-brand-500/10 rounded-full translate-x-4 -translate-y-4 group-hover:scale-110 transition-transform" />
@@ -291,7 +267,7 @@ export default function LeaveManagementView({
           </div>
         </div>
 
-        {/* Card 2: Approved */}
+        {/* Card 2: Active Today */}
         <div className="bg-white dark:bg-slate-950 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
           <div className="absolute right-0 top-0 w-24 h-24 bg-emerald-500/5 dark:bg-emerald-500/10 rounded-full translate-x-4 -translate-y-4 group-hover:scale-110 transition-transform" />
           <div className="flex items-center gap-4">
@@ -299,36 +275,8 @@ export default function LeaveManagementView({
               <UserCheck className="w-6 h-6" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">Approved Leaves</p>
-              <h3 className="text-2xl font-bold text-slate-800 dark:text-white mt-1">{approvedCount}</h3>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 3: Pending */}
-        <div className="bg-white dark:bg-slate-950 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute right-0 top-0 w-24 h-24 bg-amber-500/5 dark:bg-amber-500/10 rounded-full translate-x-4 -translate-y-4 group-hover:scale-110 transition-transform" />
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-amber-50 dark:bg-amber-950/20 text-amber-500 rounded-xl">
-              <AlertCircle className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">Pending Review</p>
-              <h3 className="text-2xl font-bold text-slate-800 dark:text-white mt-1">{pendingCount}</h3>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 4: Rejected */}
-        <div className="bg-white dark:bg-slate-950 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="absolute right-0 top-0 w-24 h-24 bg-rose-500/5 dark:bg-rose-500/10 rounded-full translate-x-4 -translate-y-4 group-hover:scale-110 transition-transform" />
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-rose-50 dark:bg-rose-950/20 text-rose-500 rounded-xl">
-              <UserMinus className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">Rejected Applications</p>
-              <h3 className="text-2xl font-bold text-slate-800 dark:text-white mt-1">{rejectedCount}</h3>
+              <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">Active Leaves Today</p>
+              <h3 className="text-2xl font-bold text-slate-800 dark:text-white mt-1">{activeTodayCount}</h3>
             </div>
           </div>
         </div>
@@ -360,33 +308,36 @@ export default function LeaveManagementView({
             {departments.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
 
-          {/* Leave Type */}
-          <select
-            value={leaveTypeFilter}
-            onChange={e => setLeaveTypeFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-sm focus:outline-none cursor-pointer"
-          >
-            <option value="">All Leave Types</option>
-            <option value="Annual">Annual</option>
-            <option value="Sick">Sick</option>
-            <option value="Casual">Casual</option>
-            <option value="Maternity">Maternity</option>
-            <option value="Unpaid">Unpaid</option>
-            <option value="Project">Project</option>
-            <option value="Others">Others</option>
-          </select>
+          {/* Date range filter */}
+          <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold">
+            <div className="flex items-center gap-1">
+              <span className="text-slate-400 uppercase text-[9px]">From:</span>
+              <input
+                type="date"
+                value={startDateStr}
+                onChange={e => setStartDateStr(e.target.value)}
+                className="bg-transparent focus:outline-none text-xs font-semibold"
+              />
+            </div>
+            <div className="w-px h-3 bg-slate-200 dark:bg-slate-800" />
+            <div className="flex items-center gap-1">
+              <span className="text-slate-400 uppercase text-[9px]">To:</span>
+              <input
+                type="date"
+                value={endDateStr}
+                onChange={e => setEndDateStr(e.target.value)}
+                className="bg-transparent focus:outline-none text-xs font-semibold"
+              />
+            </div>
+          </div>
 
-          {/* Status */}
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-sm focus:outline-none cursor-pointer"
+          <button
+            onClick={() => exportLeaveReportToExcel(filteredLeaves, profiles, projects, startDateStr, endDateStr)}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 active:scale-95 transition-all text-white rounded-xl shadow-md cursor-pointer"
           >
-            <option value="">All Statuses</option>
-            <option value="Pending">Pending</option>
-            <option value="Approved">Approved</option>
-            <option value="Rejected">Rejected</option>
-          </select>
+            <Download className="w-3.5 h-3.5" />
+            Export Excel
+          </button>
         </div>
       </div>
 
@@ -398,10 +349,9 @@ export default function LeaveManagementView({
               <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 uppercase">
                 <th className="py-3 px-6">Employee ID</th>
                 <th className="py-3 px-6">Employee Name</th>
-                <th className="py-3 px-6">Project</th>
-                <th className="py-3 px-6">Period</th>
-                <th className="py-3 px-6 text-center">Type</th>
-                <th className="py-3 px-6 text-center">Status</th>
+                <th className="py-3 px-6">Project ID</th>
+                <th className="py-3 px-6">Leave Start Date</th>
+                <th className="py-3 px-6">Leave End Date</th>
                 <th className="py-3 px-6">Remarks</th>
                 <th className="py-3 px-6 text-center">Actions</th>
               </tr>
@@ -412,44 +362,18 @@ export default function LeaveManagementView({
                   <tr key={l.id} className="hover:bg-slate-100/50 dark:hover:bg-slate-900/20 transition-colors">
                     <td className="py-3.5 px-6 font-mono font-bold text-slate-700 dark:text-slate-300">{l.employeeId}</td>
                     <td className="py-3.5 px-6 font-semibold text-slate-900 dark:text-white">{l.employeeName}</td>
-                    <td className="py-3.5 px-6 font-medium text-slate-750 dark:text-slate-250">{l.projectName || 'None'}</td>
+                    <td className="py-3.5 px-6 font-medium text-slate-750 dark:text-slate-250">{l.projectId || 'None'}</td>
                     <td className="py-3.5 px-6 font-mono text-xs text-slate-600 dark:text-slate-400">
-                      {formatToClientDate(l.fromDate)} to {formatToClientDate(l.toDate)}
+                      {formatToClientDate(l.fromDate)}
                     </td>
-                    <td className="py-3.5 px-6 text-center">
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold border ${getLeaveTypeBadgeClass(l.leaveType)}`}>
-                        {l.leaveType}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-6 text-center">
-                      <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-bold border ${getStatusBadgeClass(l.status)}`}>
-                        {l.status}
-                      </span>
+                    <td className="py-3.5 px-6 font-mono text-xs text-slate-600 dark:text-slate-400">
+                      {formatToClientDate(l.toDate)}
                     </td>
                     <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400 truncate max-w-[200px]" title={l.remarks}>
                       {l.remarks || '-'}
                     </td>
                     <td className="py-3.5 px-6">
                       <div className="flex items-center justify-center gap-1.5">
-                        {/* Approval Quick Actions */}
-                        {l.status === 'Pending' && (
-                          <>
-                            <button
-                              onClick={() => handleQuickStatusChange(l.id, 'Approved')}
-                              title="Approve Leave"
-                              className="p-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 dark:bg-emerald-950/20 dark:hover:bg-emerald-900/30 rounded-lg border border-emerald-200 dark:border-emerald-800 transition-colors"
-                            >
-                              <Check className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleQuickStatusChange(l.id, 'Rejected')}
-                              title="Reject Leave"
-                              className="p-1 bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-950/20 dark:hover:bg-rose-900/30 rounded-lg border border-rose-200 dark:border-rose-800 transition-colors"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
                         <button
                           onClick={() => handleOpenEdit(l)}
                           title="Edit"
@@ -510,7 +434,8 @@ export default function LeaveManagementView({
                       onFocus={() => setIsEmpSelectOpen(true)}
                       className="w-full pl-9 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
                     />
-                  </div>                  {/* Dropdown Options */}
+                  </div>
+                  {/* Dropdown Options */}
                   {isEmpSelectOpen && (
                     <div className="absolute left-0 right-0 top-[76px] z-50 max-h-48 overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl divide-y divide-slate-100 dark:divide-slate-800">
                       {filteredProfilesForSelect.length > 0 ? (
@@ -532,9 +457,9 @@ export default function LeaveManagementView({
                                   const eStr = a.travelEndDate || foundP?.endDate || '';
                                   return todayStr >= sStr && todayStr <= eStr;
                                 }) || empAss[0];
-                                setFormProjectName(active.projectName);
+                                setFormProjectId(active.projectName);
                               } else {
-                                setFormProjectName('None');
+                                setFormProjectId('None');
                               }
                             }}
                             className="px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex justify-between items-center"
@@ -552,7 +477,7 @@ export default function LeaveManagementView({
 
                 {/* Already Booked Leave Badges (Frozen Dates) */}
                 {(() => {
-                  const empLeaves = leaves.filter(l => l.employeeId === formEmployeeId && l.status !== 'Rejected' && l.id !== editingId);
+                  const empLeaves = leaves.filter(l => l.employeeId === formEmployeeId && l.id !== editingId);
                   if (empLeaves.length === 0) return null;
                   return (
                     <div className="space-y-1 bg-slate-50 dark:bg-slate-900/40 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-800/40">
@@ -560,7 +485,7 @@ export default function LeaveManagementView({
                       <div className="flex flex-wrap gap-1.5">
                         {empLeaves.map(el => (
                           <span key={el.id} className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 border border-red-100 dark:border-red-900/30 rounded-lg">
-                            🚫 {formatToClientDate(el.fromDate)} to {formatToClientDate(el.toDate)} ({el.leaveType})
+                            🚫 {formatToClientDate(el.fromDate)} to {formatToClientDate(el.toDate)}
                           </span>
                         ))}
                       </div>
@@ -568,12 +493,12 @@ export default function LeaveManagementView({
                   );
                 })()}
 
-                {/* Project Name Selection Dropdown */}
+                {/* Project ID Selection Dropdown */}
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Project Name</label>
+                  <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Project ID</label>
                   <select
-                      value={formProjectName}
-                      onChange={e => setFormProjectName(e.target.value)}
+                      value={formProjectId}
+                      onChange={e => setFormProjectId(e.target.value)}
                       required
                       className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none cursor-pointer text-sm font-semibold"
                     >
@@ -589,7 +514,7 @@ export default function LeaveManagementView({
                 {/* Dates */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Leave From Date</label>
+                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Leave Start Date</label>
                     <input
                       type="date"
                       required
@@ -599,7 +524,7 @@ export default function LeaveManagementView({
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Leave To Date</label>
+                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Leave End Date</label>
                     <input
                       type="date"
                       required
@@ -616,38 +541,6 @@ export default function LeaveManagementView({
                     {dateError}
                   </div>
                 )}
-
-                {/* Leave Type and Status */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Leave Type</label>
-                    <select
-                      value={formLeaveType}
-                      onChange={e => setFormLeaveType(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none cursor-pointer"
-                    >
-                      <option value="Annual">Annual</option>
-                      <option value="Sick">Sick</option>
-                      <option value="Casual">Casual</option>
-                      <option value="Maternity">Maternity</option>
-                      <option value="Unpaid">Unpaid</option>
-                      <option value="Project">Project</option>
-                      <option value="Others">Others</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Approval Status</label>
-                    <select
-                      value={formStatus}
-                      onChange={e => setFormStatus(e.target.value as any)}
-                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none cursor-pointer"
-                    >
-                      <option value="Approved">Approved</option>
-                      <option value="Pending">Pending</option>
-                      <option value="Rejected">Rejected</option>
-                    </select>
-                  </div>
-                </div>
 
                 {/* Remarks */}
                 <div className="space-y-1.5">

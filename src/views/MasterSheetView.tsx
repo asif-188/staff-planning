@@ -107,9 +107,21 @@ export default function MasterSheetView({
   // Validation UI panel state
   const [showValidationPanel, setShowValidationPanel] = useState(false);
 
-  // Date Range state
-  const [startDateStr, setStartDateStr] = useState('2026-05-01');
-  const [endDateStr, setEndDateStr] = useState('2026-06-30');
+  const [startDateStr, setStartDateStr] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    return `${yr}-${mo}-01`;
+  });
+  const [endDateStr, setEndDateStr] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const nextMonthDate = new Date(yr, d.getMonth() + 2, 0);
+    const nextYr = nextMonthDate.getFullYear();
+    const nextMo = String(nextMonthDate.getMonth() + 1).padStart(2, '0');
+    const nextLastDay = String(nextMonthDate.getDate()).padStart(2, '0');
+    return `${nextYr}-${nextMo}-${nextLastDay}`;
+  });
 
   // Export modal range states
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -312,11 +324,40 @@ export default function MasterSheetView({
       const rawStart = assignForm.travelStartDate || targetProj?.startDate || '';
       const rawEnd = assignForm.travelEndDate || targetProj?.endDate || '';
       
+      const newStart = normalizeDateString(rawStart);
+      const newEnd = normalizeDateString(rawEnd);
+      
+      if (!newStart || !newEnd) {
+        alert('Please specify valid start and end dates.');
+        return;
+      }
+      
+      if (newStart > newEnd) {
+        alert('Travel start date cannot be after travel end date.');
+        return;
+      }
+
+      // Check for overlapping assignments for the same employee
+      const hasOverlap = assignments.some((a, idx) => {
+        if (editingIndex !== null && idx === editingIndex) return false;
+        if (a.employeeId !== assignForm.employeeId) return false;
+        
+        const aStart = normalizeDateString(a.travelStartDate || '');
+        const aEnd = normalizeDateString(a.travelEndDate || '');
+        
+        return newStart <= aEnd && newEnd >= aStart;
+      });
+
+      if (hasOverlap) {
+        alert('❌ Error: This employee already has a project allocation during these dates. Overlapping allocations are not allowed.');
+        return;
+      }
+
       const completeData = {
         ...assignForm,
         projectName: assignForm.projectName,
-        travelStartDate: normalizeDateString(rawStart),
-        travelEndDate: normalizeDateString(rawEnd)
+        travelStartDate: newStart,
+        travelEndDate: newEnd
       };
 
       if (editingIndex !== null) {
@@ -470,11 +511,19 @@ export default function MasterSheetView({
 
   const getFilteredEmployees = () => {
     return profiles.map((p, idx) => ({ data: p, index: idx })).filter(({ data }) => {
+      const empAssigns = assignments.filter(a => a.employeeId === data.id);
+      const matchesProjectOrCode = empAssigns.some(a => {
+        const proj = projects.find(p => p.name === a.projectName);
+        return a.projectName.toLowerCase().includes(search.toLowerCase()) ||
+               (proj?.budgetCode || '').toLowerCase().includes(search.toLowerCase());
+      });
+
       const matchesSearch = !search || 
         data.name.toLowerCase().includes(search.toLowerCase()) ||
         data.id.toLowerCase().includes(search.toLowerCase()) ||
         data.designation.toLowerCase().includes(search.toLowerCase()) ||
-        data.department.toLowerCase().includes(search.toLowerCase());
+        data.department.toLowerCase().includes(search.toLowerCase()) ||
+        matchesProjectOrCode;
       
       const matchesDept = !deptFilter || data.department === deptFilter;
 
@@ -502,11 +551,15 @@ export default function MasterSheetView({
       const prof = profiles.find(p => p.id === data.employeeId);
       const name = prof?.name || '';
       const dept = prof?.department || '';
+      const proj = projects.find(p => p.name === data.projectName);
+      const projCode = proj?.budgetCode || '';
 
       const matchesSearch = !search ||
         name.toLowerCase().includes(search.toLowerCase()) ||
         data.employeeId.toLowerCase().includes(search.toLowerCase()) ||
         data.projectName.toLowerCase().includes(search.toLowerCase()) ||
+        dept.toLowerCase().includes(search.toLowerCase()) ||
+        projCode.toLowerCase().includes(search.toLowerCase()) ||
         data.remarks.toLowerCase().includes(search.toLowerCase());
 
       const matchesDept = !deptFilter || dept === deptFilter;
@@ -576,9 +629,18 @@ export default function MasterSheetView({
 
   const getFilteredProjects = () => {
     return projects.map((p, idx) => ({ data: p, index: idx })).filter(({ data }) => {
+      const projAssigns = assignments.filter(a => a.projectName === data.name);
+      const matchesEmployeeOrDept = projAssigns.some(a => {
+        const prof = profiles.find(p => p.id === a.employeeId);
+        return (prof?.name || '').toLowerCase().includes(search.toLowerCase()) ||
+               a.employeeId.toLowerCase().includes(search.toLowerCase()) ||
+               (prof?.department || '').toLowerCase().includes(search.toLowerCase());
+      });
+
       const matchesSearch = !search ||
         data.name.toLowerCase().includes(search.toLowerCase()) ||
-        data.budgetCode.toLowerCase().includes(search.toLowerCase());
+        data.budgetCode.toLowerCase().includes(search.toLowerCase()) ||
+        matchesEmployeeOrDept;
 
       return matchesSearch;
     });

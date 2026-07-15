@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import type { Employee, EmployeeProfile, ProjectAssignment, ProjectDetails, AttendanceRecord, LeaveRecord } from '../hooks/usePlanningState';
-import { format, eachDayOfInterval } from 'date-fns';
+import { format, eachDayOfInterval, differenceInDays } from 'date-fns';
 import { Search, UserX, AlertCircle, Download } from 'lucide-react';
 import { exportAvailabilityReportToExcel } from '../utils/excelHelper';
-import { safeParseDate, resolveStatusOnDate } from '../utils/timelineHelper';
+import { safeParseDate, resolveStatusOnDate, formatToClientDate } from '../utils/timelineHelper';
 
 interface AvailabilityViewProps {
   profiles: EmployeeProfile[];
@@ -15,8 +15,22 @@ interface AvailabilityViewProps {
 
 export default function AvailabilityView({ profiles, assignments, projects, attendance, leaves }: AvailabilityViewProps) {
   // Query Form State
-  const [startDateStr, setStartDateStr] = useState('2026-05-01');
-  const [endDateStr, setEndDateStr] = useState('2026-05-15');
+  const [startDateStr, setStartDateStr] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dt = String(d.getDate()).padStart(2, '0');
+    return `${yr}-${mo}-${dt}`;
+  });
+  const [endDateStr, setEndDateStr] = useState(() => {
+    const d = new Date();
+    const end = new Date(d);
+    end.setDate(d.getDate() + 14); // 15-day range
+    const endYr = end.getFullYear();
+    const endMo = String(end.getMonth() + 1).padStart(2, '0');
+    const endDt = String(end.getDate()).padStart(2, '0');
+    return `${endYr}-${endMo}-${endDt}`;
+  });
   const [deptFilter, setDeptFilter] = useState('');
   const [funcFilter, setFuncFilter] = useState('');
   
@@ -55,9 +69,14 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
 
     const availableStaffList: {
       employee: Employee;
-      freeRanges: { startStr: string; endStr: string }[];
+      freeRange: { startStr: string; endStr: string; daysCount: number };
       totalFreeDays: number;
       occupiedDetails: string;
+      workingDetails: string;
+      leaveDetails: string;
+      todayStatus: 'W' | 'T' | 'L' | 'S';
+      todayStatusLabel: string;
+      periodOccupancies: string[];
     }[] = [];
 
     profiles.forEach(prof => {
@@ -102,11 +121,10 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
         }
       });
 
-      // If they have ANY free days in this search window, we include them!
       if (freeDays.length > 0) {
         // Group freeDays into contiguous ranges
         const sortedDays = [...freeDays].sort((a, b) => a.getTime() - b.getTime());
-        const ranges: { startStr: string; endStr: string }[] = [];
+        const ranges: { startStr: string; endStr: string; daysCount: number }[] = [];
         
         if (sortedDays.length > 0) {
           let currentStart = sortedDays[0];
@@ -121,34 +139,106 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
             if (diffDays <= 1) {
               currentEnd = curr;
             } else {
+              const count = differenceInDays(currentEnd, currentStart) + 1;
               ranges.push({
                 startStr: format(currentStart, 'dd-MM-yyyy'),
-                endStr: format(currentEnd, 'dd-MM-yyyy')
+                endStr: format(currentEnd, 'dd-MM-yyyy'),
+                daysCount: count
               });
               currentStart = curr;
               currentEnd = curr;
             }
           }
+          const count = differenceInDays(currentEnd, currentStart) + 1;
           ranges.push({
             startStr: format(currentStart, 'dd-MM-yyyy'),
-            endStr: format(currentEnd, 'dd-MM-yyyy')
+            endStr: format(currentEnd, 'dd-MM-yyyy'),
+            daysCount: count
           });
         }
 
-        const allocations = empAssignments.map(assign => {
-          if (!assign.projectName) return null;
-          const label = assign.projectName;
-          const start = assign.travelStartDate;
-          const end = assign.travelEndDate;
-          if (start && end) {
-            return `${label} (${start} to ${end})`;
-          }
-          return label;
-        }).filter(Boolean);
+        const todayStr = format(new Date(), 'yyyy-MM-dd');
+        const todayStatus = resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves) || 'S';
+        
+        let todayStatusLabel = 'Standby';
+        if (todayStatus === 'W') {
+          const activeAssToday = empAssignments.find(a => {
+            const proj = projects.find(p => p.name === a.projectName);
+            const start = a.travelStartDate || proj?.startDate || '';
+            const end = a.travelEndDate || proj?.endDate || '';
+            return todayStr >= start && todayStr <= end;
+          });
+          todayStatusLabel = activeAssToday ? `Working (${activeAssToday.projectName})` : 'Working';
+        } else if (todayStatus === 'T') {
+          const activeAssToday = empAssignments.find(a => {
+            const proj = projects.find(p => p.name === a.projectName);
+            const start = a.travelStartDate || proj?.startDate || '';
+            const end = a.travelEndDate || proj?.endDate || '';
+            return todayStr >= start && todayStr <= end;
+          });
+          todayStatusLabel = activeAssToday ? `Travelling (${activeAssToday.projectName})` : 'Travelling';
+        } else if (todayStatus === 'L') {
+          todayStatusLabel = 'On Leave';
+        }
 
-        const occupiedText = allocations.length > 0
-          ? `Busy on: ${allocations.join(', ')}`
-          : 'Standby';
+        const periodOccupancies: string[] = [];
+        empAssignments.forEach(assign => {
+          if (!assign.projectName) return;
+          const proj = projects.find(p => p.name === assign.projectName);
+          const start = assign.travelStartDate || proj?.startDate || '';
+          const end = assign.travelEndDate || proj?.endDate || '';
+          if (!(end < startDateStr || start > endDateStr)) {
+            const statusPrefix = assign.status === 'Travelling' ? 'Travelling for' : 'Working on';
+            periodOccupancies.push(`${statusPrefix}: ${assign.projectName} (${formatToClientDate(start)} to ${formatToClientDate(end)})`);
+          }
+        });
+
+        leaves.forEach(l => {
+          if (l.employeeId !== prof.id) return;
+          const start = l.fromDate;
+          const end = l.toDate;
+          if (!(end < startDateStr || start > endDateStr)) {
+            periodOccupancies.push(`On Leave (${formatToClientDate(start)} to ${formatToClientDate(end)})`);
+          }
+        });
+
+        const getStartDateOfOcc = (occStr: string) => {
+          const match = occStr.match(/\((\d{2}-\d{2}-\d{4})/);
+          if (match) {
+            const parts = match[1].split('-');
+            return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0])).getTime();
+          }
+          return 0;
+        };
+        periodOccupancies.sort((a, b) => getStartDateOfOcc(a) - getStartDateOfOcc(b));
+
+        let occupiedText = `Today: ${todayStatusLabel}`;
+        // Compute working details
+        const workingList: string[] = [];
+        empAssignments.forEach(assign => {
+          if (!assign.projectName) return;
+          const proj = projects.find(p => p.name === assign.projectName);
+          const start = assign.travelStartDate || proj?.startDate || '';
+          const end = assign.travelEndDate || proj?.endDate || '';
+          if (!(end < startDateStr || start > endDateStr)) {
+            workingList.push(`${assign.projectName} (ID: ${proj?.budgetCode || 'N/A'}) [${formatToClientDate(start)} to ${formatToClientDate(end)}]`);
+          }
+        });
+        const workingDetailsVal = workingList.join('; ') || 'None';
+
+        // Compute leave details
+        const leaveList: string[] = [];
+        leaves.forEach(l => {
+          if (l.employeeId !== prof.id) return;
+          const start = l.fromDate;
+          const end = l.toDate;
+          if (!(end < startDateStr || start > endDateStr)) {
+            const proj = projects.find(p => p.name === l.projectId);
+            const projPart = l.projectId && l.projectId !== 'None' ? ` for ${l.projectId} (ID: ${proj?.budgetCode || 'N/A'})` : '';
+            leaveList.push(`On Leave${projPart} [${formatToClientDate(start)} to ${formatToClientDate(end)}]`);
+          }
+        });
+        const leaveDetailsVal = leaveList.join('; ') || 'None';
 
         const empObj: Employee = {
           id: prof.id,
@@ -165,11 +255,18 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
           remarks: ''
         };
 
-        availableStaffList.push({
-          employee: empObj,
-          freeRanges: ranges,
-          totalFreeDays: freeDays.length,
-          occupiedDetails: occupiedText
+        ranges.forEach(r => {
+          availableStaffList.push({
+            employee: empObj,
+            freeRange: r,
+            totalFreeDays: r.daysCount,
+            occupiedDetails: occupiedText,
+            workingDetails: workingDetailsVal,
+            leaveDetails: leaveDetailsVal,
+            todayStatus,
+            todayStatusLabel,
+            periodOccupancies
+          });
         });
       }
     });
@@ -217,7 +314,14 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
   const filteredResults = results.filter(res => {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
-    return res.employee.name.toLowerCase().includes(q) || res.employee.id.toLowerCase().includes(q);
+    const matchesProjOrCode = assignments.filter(a => a.employeeId === res.employee.id).some(a => {
+      const proj = projects.find(p => p.name === a.projectName);
+      return a.projectName.toLowerCase().includes(q) || (proj?.budgetCode || '').toLowerCase().includes(q);
+    });
+    return res.employee.name.toLowerCase().includes(q) || 
+           res.employee.id.toLowerCase().includes(q) || 
+           res.employee.department.toLowerCase().includes(q) ||
+           matchesProjOrCode;
   });
 
   return (
@@ -353,12 +457,8 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
                         <span className="text-[10px] opacity-70">{sortField === 'totalFreeDays' ? (sortAsc ? '▲' : '▼') : '↕'}</span>
                       </div>
                     </th>
-                    <th className="py-3.5 px-6 cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-100 transition-colors" onClick={() => handleSort('occupiedDetails')}>
-                      <div className="flex items-center gap-1">
-                        Allocation Details / Status
-                        <span className="text-[10px] opacity-70">{sortField === 'occupiedDetails' ? (sortAsc ? '▲' : '▼') : '↕'}</span>
-                      </div>
-                    </th>
+                    <th className="py-3.5 px-6 select-none text-xs font-semibold uppercase tracking-wider">Working Details</th>
+                    <th className="py-3.5 px-6 select-none text-xs font-semibold uppercase tracking-wider">Leave Details</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
@@ -370,25 +470,22 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
                         <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{res.employee.department}</td>
                         <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{res.employee.designation}</td>
                         <td className="py-3.5 px-6 font-medium text-slate-700 dark:text-slate-300">
-                          <div className="flex flex-col gap-1">
-                            {res.freeRanges.map((r, rIdx) => (
-                              <span key={rIdx} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold font-mono bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 rounded-xl border border-emerald-100 dark:border-emerald-900/20 w-fit">
-                                {r.startStr} to {r.endStr}
-                              </span>
-                            ))}
-                          </div>
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold font-mono bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 rounded-xl border border-emerald-100 dark:border-emerald-900/20 w-fit">
+                            {res.freeRange.startStr} to {res.freeRange.endStr}
+                          </span>
                         </td>
                         <td className="py-3.5 px-6 text-blue-600 dark:text-blue-400 font-bold font-mono">{res.totalFreeDays} Days</td>
-                        <td className="py-3.5 px-6">
-                          <span className={`text-xs font-medium ${res.occupiedDetails === 'Standby' ? 'text-orange-600 dark:text-orange-400 font-bold' : 'text-slate-500'}`}>
-                            {res.occupiedDetails}
-                          </span>
+                        <td className="py-3.5 px-6 text-xs text-slate-700 dark:text-slate-300 font-medium leading-relaxed">
+                          {res.workingDetails}
+                        </td>
+                        <td className="py-3.5 px-6 text-xs text-slate-700 dark:text-slate-300 font-medium leading-relaxed">
+                          {res.leaveDetails}
                         </td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500 dark:text-slate-400">
+                      <td colSpan={8} className="py-8 text-center text-slate-500 dark:text-slate-400">
                         <div className="flex flex-col items-center gap-2 justify-center py-4">
                           <UserX className="w-8 h-8 text-slate-400" />
                           <span>No staff available during this specific period. Try adjusting filters or dates.</span>

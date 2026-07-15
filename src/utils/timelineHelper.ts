@@ -5,7 +5,6 @@ import {
   eachDayOfInterval, 
   format, 
   getWeek, 
-  isSameDay, 
   parseISO,
   parse,
   isValid
@@ -114,39 +113,37 @@ export function resolveStatusOnDate(
   leaves: LeaveRecord[]
 ): 'W' | 'T' | 'L' | 'S' | '' {
   if (!employeeId || !dateStr) return '';
-  const date = safeParseDate(dateStr);
-  if (isNaN(date.getTime())) return '';
+  const targetDateStr = normalizeDateString(dateStr);
+  if (!targetDateStr) return '';
 
-  // 1. Check approved leave record first (Leave overrides active project assignment on those dates)
-  const isApprovedLeave = (leaves || []).some(l => {
-    if (l.employeeId !== employeeId || l.status !== 'Approved') return false;
-    const from = safeParseDate(l.fromDate);
-    const to = safeParseDate(l.toDate);
-    if (isNaN(from.getTime()) || isNaN(to.getTime())) return false;
-    return date >= from && date <= to;
+  // 1. Check leave record first (Leave overrides active project assignment on those dates)
+  const isLeave = (leaves || []).some(l => {
+    if (l.employeeId !== employeeId) return false;
+    const fromStr = normalizeDateString(l.fromDate || '');
+    const toStr = normalizeDateString(l.toDate || '');
+    if (!fromStr || !toStr) return false;
+    return targetDateStr >= fromStr && targetDateStr <= toStr;
   });
 
-  if (isApprovedLeave) {
+  if (isLeave) {
     return 'L';
   }
 
   // 2. Check active assignment
   const empAssignments = assignments.filter(a => a.employeeId === employeeId);
   let activeAssignment: ProjectAssignment | null = null;
-  let activeStart: Date | null = null;
-  let activeEnd: Date | null = null;
+  let activeStartStr = '';
+  let activeEndStr = '';
 
   for (const a of empAssignments) {
     const foundProj = projects.find(p => p.name === a.projectName);
-    const startStr = a.travelStartDate || foundProj?.startDate || '';
-    const endStr = a.travelEndDate || foundProj?.endDate || '';
+    const startStr = normalizeDateString(a.travelStartDate || foundProj?.startDate || '');
+    const endStr = normalizeDateString(a.travelEndDate || foundProj?.endDate || '');
     if (startStr && endStr) {
-      const start = safeParseDate(startStr);
-      const end = safeParseDate(endStr);
-      if (date >= start && date <= end) {
+      if (targetDateStr >= startStr && targetDateStr <= endStr) {
         activeAssignment = a;
-        activeStart = start;
-        activeEnd = end;
+        activeStartStr = startStr;
+        activeEndStr = endStr;
         break;
       }
     }
@@ -154,10 +151,13 @@ export function resolveStatusOnDate(
 
   if (activeAssignment) {
     // First day and last day is 'T' (Travel)
-    if (activeStart && activeEnd) {
-      if (isSameDay(date, activeStart) || isSameDay(date, activeEnd)) {
+    if (activeStartStr && activeEndStr) {
+      if (targetDateStr === activeStartStr || targetDateStr === activeEndStr) {
         return 'T';
       }
+    }
+    if (activeAssignment.status === 'Travelling') {
+      return 'T';
     }
     return 'W';
   }

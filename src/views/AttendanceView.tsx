@@ -30,12 +30,27 @@ export default function AttendanceView({
 }: AttendanceViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'table' | 'calendar'>('table');
   
-  // Custom Date Range for Grid View
-  const [customStart, setCustomStart] = useState('2026-05-01');
-  const [customEnd, setCustomEnd] = useState('2026-05-31');
+  const [customStart, setCustomStart] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    return `${yr}-${mo}-01`;
+  });
+  const [customEnd, setCustomEnd] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const lastDay = new Date(yr, d.getMonth() + 1, 0).getDate();
+    return `${yr}-${mo}-${String(lastDay).padStart(2, '0')}`;
+  });
 
   // Month selector for Calendar View (needs to draw offsets)
-  const [currentMonthStr, setCurrentMonthStr] = useState('2026-05');
+  const [currentMonthStr, setCurrentMonthStr] = useState(() => {
+    const d = new Date();
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    return `${yr}-${mo}`;
+  });
   const [attendanceSearchQuery, setAttendanceSearchQuery] = useState('');
   const [sortField, setSortField] = useState<string>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
@@ -97,10 +112,15 @@ export default function AttendanceView({
   const filteredProfiles = profiles.filter(prof => {
     const q = attendanceSearchQuery.toLowerCase().trim();
     if (!q) return true;
+    const matchesProjOrCode = assignments.filter(a => a.employeeId === prof.id).some(a => {
+      const proj = projects.find(p => p.name === a.projectName);
+      return a.projectName.toLowerCase().includes(q) || (proj?.budgetCode || '').toLowerCase().includes(q);
+    });
     return prof.name.toLowerCase().includes(q) || 
            prof.id.toLowerCase().includes(q) || 
            prof.department.toLowerCase().includes(q) ||
-           prof.designation.toLowerCase().includes(q);
+           prof.designation.toLowerCase().includes(q) ||
+           matchesProjOrCode;
   });
 
   const sortedProfiles = [...filteredProfiles].sort((a, b) => {
@@ -136,8 +156,8 @@ export default function AttendanceView({
   const getCellBadgeClass = (status: string) => {
     switch (status) {
       case 'W': return 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-900/40';
-      case 'T': return 'bg-purple-100 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-900/40';
-      case 'L': return 'bg-zinc-100 dark:bg-zinc-800/60 text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700/60';
+      case 'T': return 'bg-purple-700 text-white border-purple-800';
+      case 'L': return 'bg-purple-100 dark:bg-purple-950/20 text-purple-700 dark:text-purple-400 border-purple-200 dark:border-purple-900/30';
       case 'S': return 'bg-orange-100 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-900/40';
       default: return 'bg-slate-50 dark:bg-slate-900 text-slate-300 dark:text-slate-700 border-slate-200 dark:border-slate-800';
     }
@@ -243,8 +263,8 @@ export default function AttendanceView({
             <div className="flex flex-wrap gap-3 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
               <span className="text-slate-400 self-center uppercase text-[9px] font-bold">Statuses:</span>
               <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-950/40 text-blue-600 border border-blue-200">W: Work</span>
-              <span className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/40 text-purple-600 border border-purple-200">T: Travel</span>
-              <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800/60 text-zinc-500 border border-zinc-200">L: Leave</span>
+              <span className="px-1.5 py-0.5 rounded bg-purple-700 text-white border border-purple-800">T: Travel</span>
+              <span className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/20 text-purple-700 border border-purple-200">L: Leave</span>
               <span className="px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-950/40 text-orange-600 border border-orange-200">S: Standby</span>
             </div>
           </div>
