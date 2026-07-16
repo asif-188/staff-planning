@@ -866,12 +866,58 @@ export async function exportPlanningGridToExcel(
     const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
     const proj = projects.find(p => p.name === a.projectName);
     
-    // Find leaves for this employee on this project that fall within or after this assignment
-    const assocLeave = leaves.find(l => 
+    // Find leaves for this employee on this project
+    const empProjLeaves = leaves.filter(l => 
       l.employeeId === a.employeeId && 
-      l.projectId === a.projectName &&
-      l.fromDate >= a.travelStartDate
+      l.projectId === a.projectName
     );
+
+    // 1. Try to find an exactly overlapping leave
+    let assocLeave = empProjLeaves.find(l => 
+      !(l.toDate < a.travelStartDate || l.fromDate > a.travelEndDate)
+    );
+
+    // 2. If no overlapping leave, find if this assignment is the closest one to any of the employee's project leaves
+    if (!assocLeave) {
+      const nonOverlappingLeaves = empProjLeaves.filter(l => {
+        const overlapsAny = assignments.some(otherA => 
+          otherA.employeeId === l.employeeId &&
+          !(l.toDate < otherA.travelStartDate || l.fromDate > otherA.travelEndDate)
+        );
+        return !overlapsAny;
+      });
+
+      const matchingLeave = nonOverlappingLeaves.find(l => {
+        const lDate = safeParseDate(l.fromDate);
+        if (isNaN(lDate.getTime())) return false;
+
+        const candidateAssignments = assignments.filter(otherA => 
+          otherA.employeeId === a.employeeId && 
+          otherA.projectName === a.projectName
+        );
+
+        if (candidateAssignments.length === 0) return false;
+
+        let closestA = candidateAssignments[0];
+        let minDiff = Infinity;
+
+        candidateAssignments.forEach(otherA => {
+          const aStart = safeParseDate(otherA.travelStartDate);
+          if (isNaN(aStart.getTime())) return;
+          const diff = Math.abs(lDate.getTime() - aStart.getTime());
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestA = otherA;
+          }
+        });
+
+        return closestA.travelStartDate === a.travelStartDate && closestA.travelEndDate === a.travelEndDate;
+      });
+
+      if (matchingLeave) {
+        assocLeave = matchingLeave;
+      }
+    }
 
     const newRow = detailsSheet.addRow({
       name: prof.name,
@@ -2299,12 +2345,58 @@ export async function exportConsolidatedReportToExcel(
     const prof = profiles.find(p => p.id === a.employeeId) || { name: 'Unknown', department: 'Unknown', designation: 'Unknown' };
     const proj = projects.find(p => p.name === a.projectName);
     
-    // Find leaves for this employee on this project that fall within or after this assignment
-    const assocLeave = leaves.find(l => 
+    // Find leaves for this employee on this project
+    const empProjLeaves = leaves.filter(l => 
       l.employeeId === a.employeeId && 
-      l.projectId === a.projectName &&
-      l.fromDate >= a.travelStartDate
+      l.projectId === a.projectName
     );
+
+    // 1. Try to find an exactly overlapping leave
+    let assocLeave = empProjLeaves.find(l => 
+      !(l.toDate < a.travelStartDate || l.fromDate > a.travelEndDate)
+    );
+
+    // 2. If no overlapping leave, find if this assignment is the closest one to any of the employee's project leaves
+    if (!assocLeave) {
+      const nonOverlappingLeaves = empProjLeaves.filter(l => {
+        const overlapsAny = assignments.some(otherA => 
+          otherA.employeeId === l.employeeId &&
+          !(l.toDate < otherA.travelStartDate || l.fromDate > otherA.travelEndDate)
+        );
+        return !overlapsAny;
+      });
+
+      const matchingLeave = nonOverlappingLeaves.find(l => {
+        const lDate = safeParseDate(l.fromDate);
+        if (isNaN(lDate.getTime())) return false;
+
+        const candidateAssignments = assignments.filter(otherA => 
+          otherA.employeeId === a.employeeId && 
+          otherA.projectName === a.projectName
+        );
+
+        if (candidateAssignments.length === 0) return false;
+
+        let closestA = candidateAssignments[0];
+        let minDiff = Infinity;
+
+        candidateAssignments.forEach(otherA => {
+          const aStart = safeParseDate(otherA.travelStartDate);
+          if (isNaN(aStart.getTime())) return;
+          const diff = Math.abs(lDate.getTime() - aStart.getTime());
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestA = otherA;
+          }
+        });
+
+        return closestA.travelStartDate === a.travelStartDate && closestA.travelEndDate === a.travelEndDate;
+      });
+
+      if (matchingLeave) {
+        assocLeave = matchingLeave;
+      }
+    }
 
     const newRow = summarySheet.addRow({
       name: prof.name,
