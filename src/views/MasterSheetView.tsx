@@ -353,6 +353,19 @@ export default function MasterSheetView({
         return;
       }
 
+      // Check for overlapping leaves for the same employee
+      const hasLeaveOverlap = leaves.some(l => {
+        if (l.employeeId !== assignForm.employeeId) return false;
+        const lStart = normalizeDateString(l.fromDate || '');
+        const lEnd = normalizeDateString(l.toDate || '');
+        return newStart <= lEnd && newEnd >= lStart;
+      });
+
+      if (hasLeaveOverlap) {
+        alert('❌ Error: This employee has leave scheduled during these dates. You cannot allocate a project during leave dates.');
+        return;
+      }
+
       const completeData = {
         ...assignForm,
         projectName: assignForm.projectName,

@@ -86,10 +86,22 @@ export default function LeaveManagementView({
 
     if (overlappingRecord) {
       setDateError(`❌ Date range overlaps with existing leave: ${formatToClientDate(overlappingRecord.fromDate)} to ${formatToClientDate(overlappingRecord.toDate)} (Frozen).`);
+      return;
+    }
+
+    const overlappingAssignment = assignments.find(a => {
+      if (a.employeeId !== formEmployeeId || a.projectName === 'None') return false;
+      const aStart = a.travelStartDate;
+      const aEnd = a.travelEndDate;
+      return !(formToDate < aStart || formFromDate > aEnd);
+    });
+
+    if (overlappingAssignment) {
+      setDateError(`❌ Date range overlaps with project assignment on "${overlappingAssignment.projectName}" (${formatToClientDate(overlappingAssignment.travelStartDate)} to ${formatToClientDate(overlappingAssignment.travelEndDate)}).`);
     } else {
       setDateError('');
     }
-  }, [formEmployeeId, formFromDate, formToDate, leaves, editingId]);
+  }, [formEmployeeId, formFromDate, formToDate, leaves, assignments, editingId]);
 
   const todayStr = new Date().toISOString().split('T')[0];
 

@@ -181,6 +181,41 @@ export function validateMasterPlanningData(
     }
   });
 
+  // 5. Overlapping project assignments and leaves check
+  assignments.forEach((a, aIdx) => {
+    if (!a.employeeId || !a.projectName || a.projectName === 'None') return;
+
+    const aStart = safeParseDate(a.travelStartDate);
+    const aEnd = safeParseDate(a.travelEndDate);
+
+    if (isNaN(aStart.getTime()) || isNaN(aEnd.getTime())) return;
+
+    const empLeaves = leaves.filter(l => l.employeeId === a.employeeId);
+
+    empLeaves.forEach(l => {
+      const lStart = safeParseDate(l.fromDate);
+      const lEnd = safeParseDate(l.toDate);
+
+      if (isNaN(lStart.getTime()) || isNaN(lEnd.getTime())) return;
+
+      const overlap = !(lEnd < aStart || lStart > aEnd);
+      if (overlap) {
+        const prof = profiles.find(p => p.id === a.employeeId);
+        addIssue(
+          'Error',
+          'Assignment',
+          `Employee "${prof?.name || a.employeeId}" has a project assignment on "${a.projectName}" (${formatToClientDate(a.travelStartDate)} to ${formatToClientDate(a.travelEndDate)}) overlapping with leave record (${formatToClientDate(l.fromDate)} to ${formatToClientDate(l.toDate)}).`,
+          'Adjust the project assignment dates or delete/adjust the leave record to resolve the overlap.',
+          {
+            employeeId: a.employeeId,
+            employeeName: prof?.name,
+            projectName: a.projectName,
+            recordIndex: aIdx
+          }
+        );
+      }
+    });
+  });
 
   // 6. Attendance records check
   Object.keys(attendance || {}).forEach(key => {
