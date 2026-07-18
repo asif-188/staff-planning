@@ -9,7 +9,7 @@ import {
   exportConsolidatedReportToExcel
 } from '../utils/excelHelper';
 import { format } from 'date-fns';
-import { normalizeDateString, resolveStatusOnDate, formatToClientDate } from '../utils/timelineHelper';
+import { normalizeDateString, formatToClientDate } from '../utils/timelineHelper';
 import { exportValidationReportToExcel, type ValidationIssue } from '../utils/validationHelper';
 import { 
   Plus, 
@@ -69,7 +69,6 @@ interface MasterSheetViewProps {
 }
 
 export default function MasterSheetView({
-  attendance,
   leaves,
   profiles,
   projects,
@@ -83,7 +82,6 @@ export default function MasterSheetView({
   addAssignment,
   editAssignment,
   deleteAssignment,
-
   activeSubTab,
   setActiveSubTab,
   search,
@@ -141,14 +139,14 @@ export default function MasterSheetView({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form states
-  const [profileForm, setProfileForm] = useState<EmployeeProfile>({ id: '', name: '', department: 'Engineering', designation: '' });
+  const [profileForm, setProfileForm] = useState<EmployeeProfile>({ id: '', name: '', department: 'Engineering', designation: '', status: '', joiningDate: '' });
   const [projectForm, setProjectForm] = useState<ProjectDetails>({ name: '', budgetCode: '', startDate: '', endDate: '' });
   const [assignForm, setAssignForm] = useState<ProjectAssignment>({
     employeeId: '',
     projectName: '',
     travelStartDate: '',
     travelEndDate: '',
-    status: 'Working',
+    status: 'Work',
     remarks: ''
   });
 
@@ -165,8 +163,8 @@ export default function MasterSheetView({
   const uniqueDepts = Array.from(new Set(profiles.map(p => p.department)));
   const uniqueProjects = Array.from(new Set(projects.map(p => p.name)));
   
-  // Custom dropdown status filter options for employees today status
-  const statuses = ['Working', 'Leave', 'Travelling', 'Standby'];
+  // Custom dropdown status filter options for employees status
+  const statuses = ['Work', 'Standby'];
 
   // Searchable filters with automatic show-all on focus (exact match override)
   const isEmpExactMatch = profiles.some(p => `${p.id} - ${p.name}` === empSearch);
@@ -256,7 +254,7 @@ export default function MasterSheetView({
   const handleOpenAdd = () => {
     setEditingIndex(null);
     if (activeSubTab === 'employees') {
-      setProfileForm({ id: '', name: '', department: 'Engineering', designation: '' });
+      setProfileForm({ id: '', name: '', department: 'Engineering', designation: '', status: '', joiningDate: '' });
     } else if (activeSubTab === 'projects') {
       setProjectForm({ name: '', budgetCode: '', startDate: '', endDate: '' });
     } else {
@@ -267,7 +265,7 @@ export default function MasterSheetView({
         projectName: defaultProj?.name || '',
         travelStartDate: defaultProj?.startDate || '',
         travelEndDate: defaultProj?.endDate || '',
-        status: 'Working',
+        status: 'Work',
         remarks: ''
       });
       setEmpSearch(defaultEmp ? `${defaultEmp.id} - ${defaultEmp.name}` : '');
@@ -465,7 +463,7 @@ export default function MasterSheetView({
       );
       if (!confirmProceed) return;
     }
-    exportDatabaseToExcel(profiles, projects, assignments);
+    exportDatabaseToExcel(profiles, projects, assignments, leaves);
   };
 
   const handleExportConsolidated = () => {
@@ -510,17 +508,6 @@ export default function MasterSheetView({
     }
   };
 
-  // Status mapping for Employees
-  const getTodayStatus = (prof: EmployeeProfile) => {
-    const todayStr = format(new Date(), 'yyyy-MM-dd');
-
-    // 1. Explicit attendance override
-    const att = attendance[`${prof.id}_${todayStr}`];
-    if (att) return att;
-
-    // 2. Resolve based on assignments, projects and manual leaves
-    return resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves);
-  };
 
   const getFilteredEmployees = () => {
     return profiles.map((p, idx) => ({ data: p, index: idx })).filter(({ data }) => {
@@ -542,15 +529,11 @@ export default function MasterSheetView({
 
       let matchesStatus = true;
       if (statusFilter) {
-        const todayStatus = getTodayStatus(data);
-        if (statusFilter === 'Working') {
-          matchesStatus = todayStatus === 'W';
-        } else if (statusFilter === 'Travelling') {
-          matchesStatus = todayStatus === 'T';
-        } else if (statusFilter === 'Leave') {
-          matchesStatus = todayStatus === 'L';
+        const currentStatus = data.status || '';
+        if (statusFilter === 'Work') {
+          matchesStatus = currentStatus === 'Work';
         } else if (statusFilter === 'Standby') {
-          matchesStatus = todayStatus === 'S';
+          matchesStatus = currentStatus === 'Standby';
         }
       }
 
@@ -580,14 +563,10 @@ export default function MasterSheetView({
       
       let matchesStatus = true;
       if (statusFilter) {
-        if (statusFilter === 'Working') {
-          matchesStatus = data.status === 'Working';
-        } else if (statusFilter === 'Leave') {
-          matchesStatus = data.status === 'Leave';
-        } else if (statusFilter === 'Travelling') {
-          matchesStatus = data.status === 'Travelling';
-        } else {
-          matchesStatus = false;
+        if (statusFilter === 'Work') {
+          matchesStatus = data.status === 'Work' || data.status === 'Working' || data.status === 'Travelling';
+        } else if (statusFilter === 'Standby') {
+          matchesStatus = data.status === 'Standby';
         }
       }
 
@@ -749,6 +728,21 @@ export default function MasterSheetView({
           >
             <Download className="w-3.5 h-3.5" />
             Export Database
+          </button>
+
+          <button
+            onClick={async () => {
+              try {
+                const count = await autoAlignMismatches();
+                alert(`⚡ Statuses synced successfully across all modules! Aligned ${count} daily attendance record(s).`);
+              } catch (err) {
+                console.error("Failed to sync statuses:", err);
+                alert("❌ Error: Failed to synchronize statuses.");
+              }
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md transition-all cursor-pointer"
+          >
+            Single-Click Sync ⚡
           </button>
 
           <button
@@ -1002,7 +996,7 @@ export default function MasterSheetView({
                 className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
               >
                 <option value="">All Statuses</option>
-                {['Working', 'Leave', 'Travelling'].map(s => <option key={s} value={s}>{s}</option>)}
+                {['Work', 'Standby'].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
 
               <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer bg-slate-100 dark:bg-slate-900 py-2 px-3 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-800 transition-colors">
@@ -1023,7 +1017,7 @@ export default function MasterSheetView({
               onChange={e => setStatusFilter(e.target.value)}
               className="bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-xs py-2 px-3 focus:outline-none cursor-pointer"
             >
-              <option value="">All Statuses Today</option>
+              <option value="">All Statuses</option>
               {statuses.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
@@ -1060,16 +1054,9 @@ export default function MasterSheetView({
                       <td className="py-3.5 px-6 text-xs font-mono">{formatToClientDate(data.travelStartDate)}</td>
                       <td className="py-3.5 px-6 text-xs font-mono">{formatToClientDate(data.travelEndDate)}</td>
                       <td className="py-3.5 px-6">
-                        {(() => {
-                          const todayStr = format(new Date(), 'yyyy-MM-dd');
-                          const status = resolveStatusOnDate(data.id, todayStr, assignments, projects, leaves);
-                          const label = status === 'W' ? 'Work' : status === 'T' ? 'Travel' : status === 'L' ? 'Leave' : status === 'S' ? 'Standby' : 'None';
-                          return (
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${getStatusBadgeClass(label)}`}>
-                              {label}
-                            </span>
-                          );
-                        })()}
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${getStatusBadgeClass(data.status === 'Standby' ? 'Standby' : 'Work')}`}>
+                          {data.status === 'Standby' ? 'Standby' : 'Work'}
+                        </span>
                       </td>
                       <td className="py-3.5 px-6 text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -1096,7 +1083,8 @@ export default function MasterSheetView({
                   <th className="py-4 px-6">Employee Name</th>
                   <th className="py-4 px-6">Department</th>
                   <th className="py-4 px-6">Designation</th>
-                  <th className="py-4 px-6">Status Today</th>
+                  <th className="py-4 px-6">Joining Date</th>
+                  <th className="py-4 px-6">Status</th>
                   <th className="py-4 px-6 text-right">Actions</th>
                 </tr>
               </thead>
@@ -1108,17 +1096,11 @@ export default function MasterSheetView({
                       <td className="py-3.5 px-6 font-semibold text-slate-800 dark:text-white">{p.name}</td>
                       <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{p.department}</td>
                       <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{p.designation}</td>
+                      <td className="py-3.5 px-6 text-xs font-mono text-slate-600 dark:text-slate-400">{p.joiningDate ? formatToClientDate(p.joiningDate) : '-'}</td>
                       <td className="py-3.5 px-6">
-                        {(() => {
-                          const todayStatus = getTodayStatus(p);
-                          switch (todayStatus) {
-                            case 'W': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400">Working</span>;
-                            case 'T': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400">Travelling</span>;
-                            case 'L': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-zinc-100 text-zinc-800 dark:bg-zinc-800/60 dark:text-zinc-400">On Leave</span>;
-                            case 'S': return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400">Standby</span>;
-                            default: return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 dark:bg-slate-800/60 dark:text-slate-400">-</span>;
-                          }
-                        })()}
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${getStatusBadgeClass(p.status || '')}`}>
+                          {p.status || 'Blank'}
+                        </span>
                       </td>
                       <td className="py-3.5 px-6 text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -1231,6 +1213,28 @@ export default function MasterSheetView({
                       value={profileForm.designation}
                       onChange={e => setProfileForm(p => ({ ...p, designation: e.target.value }))}
                       placeholder="Developer"
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Status</label>
+                    <select
+                      value={profileForm.status || ''}
+                      onChange={e => setProfileForm(p => ({ ...p, status: e.target.value as any }))}
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
+                    >
+                      <option value="">(Blank)</option>
+                      <option value="Work">Work</option>
+                      <option value="Standby">Standby</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Joining Date</label>
+                    <input
+                      type="date"
+                      required
+                      value={profileForm.joiningDate || ''}
+                      onChange={e => setProfileForm(p => ({ ...p, joiningDate: e.target.value }))}
                       className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
                     />
                   </div>
@@ -1419,6 +1423,17 @@ export default function MasterSheetView({
                     </div>
                   </div>
 
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Status</label>
+                    <select
+                      value={assignForm.status === 'Standby' ? 'Standby' : 'Work'}
+                      onChange={e => setAssignForm(p => ({ ...p, status: e.target.value as any }))}
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:border-brand-500"
+                    >
+                      <option value="Work">Work</option>
+                      <option value="Standby">Standby</option>
+                    </select>
+                  </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Remarks</label>
                     <input

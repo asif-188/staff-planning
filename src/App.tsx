@@ -10,6 +10,7 @@ import { validateMasterPlanningData } from './utils/validationHelper';
 
 import AuditLogView from './views/AuditLogView';
 import RecycleBinView from './views/RecycleBinView';
+import NewJoineeReviewView from './views/NewJoineeReviewView';
 
 // Icon imports
 import {
@@ -30,7 +31,8 @@ import {
   History,
   ChevronDown,
   ChevronRight,
-  MoreHorizontal
+  MoreHorizontal,
+  Sparkles
 } from 'lucide-react';
 
 export default function App() {
@@ -44,7 +46,7 @@ export default function App() {
   );
   const hasValidationErrors = validationSummary.errorsCount > 0;
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'audit-log' | 'recycle-bin' | 'settings'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'audit-log' | 'recycle-bin' | 'settings' | 'new-joinee-review'>(() => {
     return (localStorage.getItem('v2_active_tab') as any) || 'dashboard';
   });
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -74,6 +76,7 @@ export default function App() {
     { id: 'leave-management', label: 'Leave Management', icon: <Calendar className="w-5 h-5" /> },
     { id: 'availability-finder', label: 'Available Staff', icon: <SearchCheck className="w-5 h-5" /> },
     { id: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-5 h-5" /> },
+    { id: 'new-joinee-review', label: 'New Joinee Review', icon: <Sparkles className="w-5 h-5" /> },
   ];
 
   const othersSubItems = [
@@ -83,7 +86,7 @@ export default function App() {
   ];
 
   const handleNavigate = (
-    tab: 'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'settings',
+    tab: 'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'settings' | 'new-joinee-review',
     subTab?: 'assignments' | 'employees' | 'projects' | 'recycle-bin',
     filters?: {
       search?: string;
@@ -266,6 +269,16 @@ export default function App() {
             recycleBin={state.recycleBin}
             restoreRecycleItem={state.restoreRecycleItem}
             deleteRecycleItemPermanently={state.deleteRecycleItemPermanently}
+          />
+        );
+
+      case 'new-joinee-review':
+        return (
+          <NewJoineeReviewView
+            reviews={state.reviews}
+            scheduleReview={state.scheduleReview}
+            triggerPowerAutomate={state.triggerPowerAutomate}
+            submitMOM={state.submitMOM}
           />
         );
 

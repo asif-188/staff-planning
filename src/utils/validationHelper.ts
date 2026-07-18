@@ -225,7 +225,7 @@ export function validateMasterPlanningData(
       const dateStr = parts[1];
       const manualStatus = attendance[key];
 
-      const expectedStatus = resolveStatusOnDate(empId, dateStr, assignments, projects, leaves);
+      const expectedStatus = resolveStatusOnDate(empId, dateStr, assignments, projects, leaves, profiles);
       if (manualStatus && expectedStatus && manualStatus !== expectedStatus) {
         const prof = profiles.find(p => p.id === empId);
         addIssue('Warning', 'Attendance', `Attendance status mismatch for ${prof?.name || empId} on ${formatToClientDate(dateStr)}. Manual: ${manualStatus}, System: ${expectedStatus}.`, 'Align manual attendance status or modify schedule dates.', { employeeId: empId, employeeName: prof?.name });

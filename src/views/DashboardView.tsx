@@ -78,7 +78,7 @@ export default function DashboardView({
 
   // 1. Resolve Status TODAY based strictly on the 4 client statuses: Work, Leave, Travel, Standby
   const getStatusToday = (profId: string) => {
-    return resolveStatusOnDate(profId, todayStr, assignments, projects, leaves);
+    return resolveStatusOnDate(profId, todayStr, assignments, projects, leaves, profiles);
   };
 
   const getEmployeesByStatusToday = (status: 'W' | 'L' | 'T' | 'S') => {
@@ -240,7 +240,7 @@ export default function DashboardView({
       const standbyDates: string[] = [];
       rangeDays.forEach(day => {
         const dStr = format(day, 'yyyy-MM-dd');
-        const st = resolveStatusOnDate(prof.id, dStr, assignments, projects, leaves);
+        const st = resolveStatusOnDate(prof.id, dStr, assignments, projects, leaves, profiles);
         if (st === 'S') {
           standbyCount++;
           standbyDates.push(dStr);
@@ -294,7 +294,7 @@ export default function DashboardView({
     switch (type) {
       case 'available': {
         const list = profiles
-          .filter(p => resolveStatusOnDate(p.id, localToday, assignments, projects, leaves) === 'S')
+          .filter(p => resolveStatusOnDate(p.id, localToday, assignments, projects, leaves, profiles) === 'S')
           .map(p => `${p.name} (${p.id}) — ${p.department} (${p.designation})`);
         setInsightModal({
           title: 'Available Staff (Standby Today)',
@@ -380,7 +380,7 @@ export default function DashboardView({
       }
       case 'working': {
         const list = profiles
-          .filter(p => resolveStatusOnDate(p.id, localToday, assignments, projects, leaves) === 'W')
+          .filter(p => resolveStatusOnDate(p.id, localToday, assignments, projects, leaves, profiles) === 'W')
           .map(p => {
             const activeAssign = assignments.find(a => {
               if (a.employeeId !== p.id) return false;
@@ -452,12 +452,12 @@ export default function DashboardView({
         const localToday = `${yr}-${mo}-${dt}`;
         
         const availableCount = profiles.filter(p => {
-          const status = resolveStatusOnDate(p.id, localToday, assignments, projects, leaves);
+          const status = resolveStatusOnDate(p.id, localToday, assignments, projects, leaves, profiles);
           return status === 'S';
         }).length;
 
         const workingTodayCount = profiles.filter(p => {
-          const status = resolveStatusOnDate(p.id, localToday, assignments, projects, leaves);
+          const status = resolveStatusOnDate(p.id, localToday, assignments, projects, leaves, profiles);
           return status === 'W';
         }).length;
 

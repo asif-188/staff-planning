@@ -9,12 +9,35 @@ import {
   deleteDoc, 
   writeBatch 
 } from 'firebase/firestore';
+import { format } from 'date-fns';
 
 export interface EmployeeProfile {
   id: string; // Unique Employee ID
   name: string;
   department: string;
   designation: string;
+  status?: 'Work' | 'Standby' | '';
+  joiningDate?: string; // YYYY-MM-DD
+}
+
+export interface ReviewRecord {
+  id: string; // doc ID format: empId_days
+  employeeId: string;
+  employeeName: string;
+  department: string;
+  designation: string;
+  joiningDate: string;
+  reviewType: '30 Days' | '90 Days' | '180 Days';
+  dueDate: string; // Calculated dynamically
+  reviewer: string;
+  status: 'Pending' | 'Scheduled' | 'Completed' | 'Overdue';
+  completionDate?: string;
+  notes?: string;
+  feedback?: string;
+  actionItems?: string;
+  attachmentName?: string;
+  outlookEventCreated?: boolean;
+  powerAutomateTriggered?: boolean;
 }
 
 export interface ProjectDetails {
@@ -29,7 +52,7 @@ export interface ProjectAssignment {
   projectName: string;
   travelStartDate: string; // YYYY-MM-DD
   travelEndDate: string;   // YYYY-MM-DD
-  status: 'Working' | 'Leave' | 'Travelling';
+  status: 'Work' | 'Standby' | 'Working' | 'Leave' | 'Travelling';
   remarks: string;
 }
 
@@ -45,7 +68,7 @@ export interface Employee {
   projectEndDate: string;
   travelStartDate: string;
   travelEndDate: string;
-  status: 'Working' | 'Leave' | 'Travelling';
+  status: 'Work' | 'Standby' | 'Leave' | 'Working' | 'Travelling';
   remarks: string;
 }
 
@@ -96,6 +119,7 @@ export function usePlanningState() {
   const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
   const [recycleBin, setRecycleBin] = useState<RecycleBinItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [reviews, setReviews] = useState<ReviewRecord[]>([]);
 
   const logChange = async (
     actionType: 'create' | 'update' | 'delete' | 'restore',
@@ -155,7 +179,9 @@ export function usePlanningState() {
           id: doc.id,
           name: data.name || '',
           department: data.department || '',
-          designation
+          designation,
+          status: data.status || '',
+          joiningDate: data.joiningDate || ''
         });
       });
       setProfiles(list);
@@ -214,6 +240,38 @@ export function usePlanningState() {
       setAuditLogs(list);
     });
 
+    const unsubscribeReviews = onSnapshot(collection(db, 'new_joinee_reviews'), (snapshot) => {
+      const list: ReviewRecord[] = [];
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        let status = data.status || 'Pending';
+        if (status !== 'Completed' && data.dueDate && data.dueDate < todayStr) {
+          status = 'Overdue';
+        }
+        list.push({
+          id: doc.id,
+          employeeId: data.employeeId || '',
+          employeeName: data.employeeName || '',
+          department: data.department || '',
+          designation: data.designation || '',
+          joiningDate: data.joiningDate || '',
+          reviewType: data.reviewType || '30 Days',
+          dueDate: data.dueDate || '',
+          reviewer: data.reviewer || '',
+          status,
+          completionDate: data.completionDate,
+          notes: data.notes,
+          feedback: data.feedback,
+          actionItems: data.actionItems,
+          attachmentName: data.attachmentName,
+          outlookEventCreated: !!data.outlookEventCreated,
+          powerAutomateTriggered: !!data.powerAutomateTriggered
+        });
+      });
+      setReviews(list);
+    });
+
     return () => {
       unsubscribeProfiles();
       unsubscribeProjects();
@@ -222,6 +280,7 @@ export function usePlanningState() {
       unsubscribeLeaves();
       unsubscribeRecycleBin();
       unsubscribeAuditLogs();
+      unsubscribeReviews();
     };
   }, []);
 
@@ -234,7 +293,9 @@ export function usePlanningState() {
     await setDoc(doc(db, 'staff_profiles', p.id), {
       name: p.name,
       department: p.department,
-      designation: p.designation
+      designation: p.designation,
+      status: p.status || '',
+      joiningDate: p.joiningDate || ''
     });
     await logChange('create', 'profile', p.id, null, p, `Created employee profile: ${p.name} (${p.id})`);
     return true;
@@ -245,7 +306,9 @@ export function usePlanningState() {
     await setDoc(doc(db, 'staff_profiles', updated.id), {
       name: updated.name,
       department: updated.department,
-      designation: updated.designation
+      designation: updated.designation,
+      status: updated.status || '',
+      joiningDate: updated.joiningDate || ''
     });
     await logChange('update', 'profile', updated.id, oldVal, updated, `Updated employee profile: ${updated.name} (${updated.id})`);
   };
@@ -269,6 +332,12 @@ export function usePlanningState() {
 
     // Delete profile doc
     batch.delete(doc(db, 'staff_profiles', profile.id));
+    
+    // Cascade delete reviews
+    const relatedReviews = reviews.filter(r => r.employeeId === profile.id);
+    relatedReviews.forEach(r => {
+      batch.delete(doc(db, 'new_joinee_reviews', r.id));
+    });
     
     // Cascade delete & recycle assignments
     const relatedAssignments = assignments.filter(a => a.employeeId === profile.id);
@@ -295,6 +364,126 @@ export function usePlanningState() {
 
     await batch.commit();
     await logChange('delete', 'profile', profile.id, profile, null, `Deleted employee profile: ${profile.name} (${profile.id})`);
+  };
+
+  // Auto-sync reviews when profiles change
+  useEffect(() => {
+    if (profiles.length === 0) return;
+    
+    const syncAllReviews = async () => {
+      const batch = writeBatch(db);
+      let needsCommit = false;
+
+      profiles.forEach(p => {
+        if (!p.joiningDate) return;
+
+        const reviewDays = [30, 90, 180];
+        const labels: Record<number, '30 Days' | '90 Days' | '180 Days'> = {
+          30: '30 Days',
+          90: '90 Days',
+          180: '180 Days'
+        };
+
+        reviewDays.forEach(days => {
+          const reviewId = `${p.id}_${days}`;
+          const existing = reviews.find(r => r.id === reviewId);
+          
+          let dueDateStr = '';
+          try {
+            const d = new Date(p.joiningDate!);
+            d.setDate(d.getDate() + days);
+            dueDateStr = format(d, 'yyyy-MM-dd');
+          } catch {
+            return;
+          }
+
+          if (!existing) {
+            needsCommit = true;
+            const todayStr = format(new Date(), 'yyyy-MM-dd');
+            const isOverdue = dueDateStr < todayStr;
+            batch.set(doc(db, 'new_joinee_reviews', reviewId), {
+              id: reviewId,
+              employeeId: p.id,
+              employeeName: p.name,
+              department: p.department,
+              designation: p.designation,
+              joiningDate: p.joiningDate,
+              reviewType: labels[days],
+              dueDate: dueDateStr,
+              reviewer: '',
+              status: isOverdue ? 'Overdue' : 'Pending',
+              outlookEventCreated: false,
+              powerAutomateTriggered: false
+            });
+          } else {
+            const todayStr = format(new Date(), 'yyyy-MM-dd');
+            const isOverdue = dueDateStr < todayStr;
+            
+            const isDifferent = 
+              existing.employeeName !== p.name ||
+              existing.department !== p.department ||
+              existing.designation !== p.designation ||
+              existing.joiningDate !== p.joiningDate ||
+              existing.dueDate !== dueDateStr;
+
+            if (isDifferent) {
+              needsCommit = true;
+              batch.set(doc(db, 'new_joinee_reviews', reviewId), {
+                employeeName: p.name,
+                department: p.department,
+                designation: p.designation,
+                joiningDate: p.joiningDate,
+                dueDate: dueDateStr,
+                status: existing.status === 'Completed' ? 'Completed' : (isOverdue ? 'Overdue' : existing.status)
+              }, { merge: true });
+            }
+          }
+        });
+      });
+
+      if (needsCommit) {
+        try {
+          await batch.commit();
+        } catch (err) {
+          console.error("Error auto-syncing reviews:", err);
+        }
+      }
+    };
+
+    syncAllReviews();
+  }, [profiles, reviews]);
+
+  const scheduleReview = async (reviewId: string, reviewer: string) => {
+    const ref = doc(db, 'new_joinee_reviews', reviewId);
+    await setDoc(ref, {
+      reviewer,
+      status: 'Scheduled',
+      outlookEventCreated: true
+    }, { merge: true });
+  };
+
+  const triggerPowerAutomate = async (reviewId: string) => {
+    const ref = doc(db, 'new_joinee_reviews', reviewId);
+    await setDoc(ref, {
+      powerAutomateTriggered: true
+    }, { merge: true });
+  };
+
+  const submitMOM = async (
+    reviewId: string, 
+    mom: { 
+      notes: string; 
+      feedback: string; 
+      actionItems: string; 
+      attachmentName?: string; 
+      completionDate: string; 
+    }
+  ) => {
+    const ref = doc(db, 'new_joinee_reviews', reviewId);
+    await setDoc(ref, {
+      ...mom,
+      status: 'Completed'
+    }, { merge: true });
   };
 
   // Projects CRUD
@@ -396,6 +585,13 @@ export function usePlanningState() {
     const docRef = doc(collection(db, 'staff_assignments'));
     await setDoc(docRef, a);
     const empName = profiles.find(p => p.id === a.employeeId)?.name || 'Unknown';
+    
+    // Explicitly update employee's profile status in the Master Sheet to the selected assignment status
+    const targetStatus = a.status === 'Standby' ? 'Standby' : 'Work';
+    await setDoc(doc(db, 'staff_profiles', a.employeeId), {
+      status: targetStatus
+    }, { merge: true });
+
     await logChange('create', 'assignment', docRef.id, null, a, `Created assignment for employee ${empName} (${a.employeeId}) on project ${a.projectName}`);
   };
 
@@ -405,6 +601,13 @@ export function usePlanningState() {
       const docId = (oldAssignment as any).id;
       await setDoc(doc(db, 'staff_assignments', docId), updated);
       const empName = profiles.find(p => p.id === updated.employeeId)?.name || 'Unknown';
+      
+      // Explicitly update employee's profile status in the Master Sheet to the selected assignment status
+      const targetStatus = updated.status === 'Standby' ? 'Standby' : 'Work';
+      await setDoc(doc(db, 'staff_profiles', updated.employeeId), {
+        status: targetStatus
+      }, { merge: true });
+
       await logChange('update', 'assignment', docId, oldAssignment, updated, `Updated assignment for employee ${empName} (${updated.employeeId}) on project ${updated.projectName}`);
     }
   };
@@ -615,18 +818,19 @@ export function usePlanningState() {
 
     // Add sample employee profiles
     const sampleProfiles = [
-      { id: 'EMP001', name: 'John Doe', department: 'Engineering', designation: 'Frontend Developer' },
-      { id: 'EMP002', name: 'Jane Smith', department: 'Product', designation: 'Product Manager' },
-      { id: 'EMP003', name: 'Alice Johnson', department: 'Engineering', designation: 'DevOps Engineer' },
-      { id: 'EMP004', name: 'Bob Brown', department: 'Design', designation: 'UI/UX Designer' },
-      { id: 'EMP005', name: 'Charlie Green', department: 'QA', designation: 'QA Lead' }
+      { id: 'EMP001', name: 'John Doe', department: 'Engineering', designation: 'Frontend Developer', status: 'Work' as const },
+      { id: 'EMP002', name: 'Jane Smith', department: 'Product', designation: 'Product Manager', status: 'Work' as const },
+      { id: 'EMP003', name: 'Alice Johnson', department: 'Engineering', designation: 'DevOps Engineer', status: 'Work' as const },
+      { id: 'EMP004', name: 'Bob Brown', department: 'Design', designation: 'UI/UX Designer', status: 'Standby' as const },
+      { id: 'EMP005', name: 'Charlie Green', department: 'QA', designation: 'QA Lead', status: 'Standby' as const }
     ];
 
     sampleProfiles.forEach(p => {
       batch.set(doc(db, 'staff_profiles', p.id), {
         name: p.name,
         department: p.department,
-        designation: p.designation
+        designation: p.designation,
+        status: p.status
       });
     });
 
@@ -660,7 +864,7 @@ export function usePlanningState() {
         projectName: 'Project Phoenix',
         travelStartDate: formatDate(today),
         travelEndDate: formatDate(oneMonthFromNow),
-        status: 'Working' as const,
+        status: 'Work' as const,
         remarks: 'Frontend implementation and styling'
       },
       {
@@ -668,7 +872,7 @@ export function usePlanningState() {
         projectName: 'Project Apollo',
         travelStartDate: formatDate(today),
         travelEndDate: formatDate(oneMonthFromNow),
-        status: 'Travelling' as const,
+        status: 'Work' as const,
         remarks: 'Travelling for product launch and onboarding'
       },
       {
@@ -676,7 +880,7 @@ export function usePlanningState() {
         projectName: 'Project Gemini',
         travelStartDate: formatDate(today),
         travelEndDate: formatDate(threeMonthsFromNow),
-        status: 'Working' as const,
+        status: 'Work' as const,
         remarks: 'DevOps and cloud infrastructure setup'
       }
     ];
@@ -797,6 +1001,7 @@ export function usePlanningState() {
     leaves,
     recycleBin,
     auditLogs,
+    reviews,
     addProfile,
     editProfile,
     deleteProfile,
@@ -819,5 +1024,8 @@ export function usePlanningState() {
     deleteRecycleItemPermanently,
     revertChange,
     autoAlignMismatches,
+    scheduleReview,
+    triggerPowerAutomate,
+    submitMOM,
   };
 }

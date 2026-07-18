@@ -41,7 +41,7 @@ export default function ReportsView({
       let working = 0, leave = 0, travel = 0, standby = 0;
       
       dates.forEach(d => {
-        const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves);
+        const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles);
         
         if (status === 'W') working++;
         else if (status === 'L') leave++;

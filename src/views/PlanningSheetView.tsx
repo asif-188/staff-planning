@@ -412,7 +412,7 @@ export default function PlanningSheetView({ profiles, assignments, projects, lea
 
                     {/* Timeline Cell Mapping */}
                     {dates.map((d, dateIdx) => {
-                      const status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+                      const status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves, profiles);
                       return (
                         <td 
                           key={dateIdx}

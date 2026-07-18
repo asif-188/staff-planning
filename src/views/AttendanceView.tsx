@@ -94,7 +94,7 @@ export default function AttendanceView({
   const getAttendanceSummary = (prof: EmployeeProfile) => {
     let w = 0, l = 0, t = 0, s = 0;
     dates.forEach(d => {
-      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves);
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles);
 
       if (status === 'W') w++;
       else if (status === 'L') l++;
@@ -359,7 +359,7 @@ export default function AttendanceView({
 
                           {/* Attendance interactive cells */}
                           {dates.map((d, dIdx) => {
-                            const currentVal = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves);
+                            const currentVal = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles);
                             const isToday = d.dateStr === todayStr;
                             
                             return (
@@ -458,7 +458,7 @@ export default function AttendanceView({
               })()}
 
               {dates.map((d, idx) => {
-                const status = resolveStatusOnDate(selectedEmp.id, d.dateStr, assignments, projects, leaves) || '';
+                const status = resolveStatusOnDate(selectedEmp.id, d.dateStr, assignments, projects, leaves, profiles) || '';
                 const isToday = d.dateStr === todayStr;
 
                 return (

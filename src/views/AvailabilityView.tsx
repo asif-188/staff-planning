@@ -95,7 +95,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
         const dayStr = format(day, 'yyyy-MM-dd');
 
         // A: Check status from planning grid using resolved status
-        const status = resolveStatusOnDate(prof.id, dayStr, assignments, projects, leaves);
+        const status = resolveStatusOnDate(prof.id, dayStr, assignments, projects, leaves, profiles);
 
         // B: Check attendance override codes
         const attCode = attendance[`${prof.id}_${dayStr}`];
@@ -158,7 +158,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
         }
 
         const todayStr = format(new Date(), 'yyyy-MM-dd');
-        const todayStatus = resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves) || 'S';
+        const todayStatus = resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves, profiles) || 'S';
         
         let todayStatusLabel = 'Standby';
         if (todayStatus === 'W') {

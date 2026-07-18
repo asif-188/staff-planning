@@ -1,4 +1,4 @@
-import type { Employee, LeaveRecord, ProjectAssignment, ProjectDetails } from '../hooks/usePlanningState';
+import type { Employee, LeaveRecord, ProjectAssignment, ProjectDetails, EmployeeProfile } from '../hooks/usePlanningState';
 import { 
   startOfMonth, 
   endOfMonth, 
@@ -110,7 +110,8 @@ export function resolveStatusOnDate(
   dateStr: string,
   assignments: ProjectAssignment[],
   projects: ProjectDetails[],
-  leaves: LeaveRecord[]
+  leaves: LeaveRecord[],
+  _profiles?: EmployeeProfile[]
 ): 'W' | 'T' | 'L' | 'S' | '' {
   if (!employeeId || !dateStr) return '';
   const targetDateStr = normalizeDateString(dateStr);
@@ -150,33 +151,33 @@ export function resolveStatusOnDate(
   }
 
   if (activeAssignment) {
-    // First day and last day is 'T' (Travel)
+    if (activeAssignment.status === 'Standby' || (activeAssignment.status as string) === 'S') {
+      return 'S';
+    }
+    // For Work assignments: First day and last day is 'T' (Travel)
     if (activeStartStr && activeEndStr) {
       if (targetDateStr === activeStartStr || targetDateStr === activeEndStr) {
         return 'T';
       }
     }
-    if (activeAssignment.status === 'Travelling') {
-      return 'T';
-    }
     return 'W';
   }
 
-  // 3. Otherwise -> Standby
-  return 'S';
+  return '';
 }
 
 export function getCellStatus(
   employee: Employee,
   dateStr: string,
-  leaves: LeaveRecord[]
+  leaves: LeaveRecord[],
+  profiles?: EmployeeProfile[]
 ): 'W' | 'T' | 'L' | 'S' | '' {
   const assignments: ProjectAssignment[] = [{
     employeeId: employee.id,
     projectName: employee.project,
     travelStartDate: employee.travelStartDate,
     travelEndDate: employee.travelEndDate,
-    status: employee.status || 'Working',
+    status: employee.status || 'Work',
     remarks: employee.remarks
   }];
   const projects: ProjectDetails[] = [{
@@ -185,5 +186,5 @@ export function getCellStatus(
     startDate: employee.projectStartDate,
     endDate: employee.projectEndDate
   }];
-  return resolveStatusOnDate(employee.id, dateStr, assignments, projects, leaves);
+  return resolveStatusOnDate(employee.id, dateStr, assignments, projects, leaves, profiles);
 }

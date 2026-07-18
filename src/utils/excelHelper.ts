@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import type { Employee, LeaveRecord, EmployeeProfile, ProjectDetails, ProjectAssignment } from '../hooks/usePlanningState';
+import type { Employee, LeaveRecord, EmployeeProfile, ProjectDetails, ProjectAssignment, ReviewRecord } from '../hooks/usePlanningState';
 import { getDatesForInterval, resolveStatusOnDate, formatToClientDate, safeParseDate, normalizeDateString } from './timelineHelper';
 import { format } from 'date-fns';
 
@@ -223,19 +223,22 @@ export async function exportLeaveReportToExcel(
 export async function exportDatabaseToExcel(
   profiles: EmployeeProfile[],
   projects: ProjectDetails[],
-  assignments: ProjectAssignment[]
+  assignments: ProjectAssignment[],
+  leaves: LeaveRecord[]
 ) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Master Sheet');
+
+  const allProjects = [
+    ...projects,
+    { name: 'Leave', budgetCode: 'L', startDate: '', endDate: '' }
+  ];
 
   // Columns A-D widths
   sheet.getColumn(1).width = 25; // Department
   sheet.getColumn(2).width = 15; // Employee ID
   sheet.getColumn(3).width = 30; // Name
   sheet.getColumn(4).width = 25; // Designation
-  
-  // Columns E and onwards width will be dynamically set by projects
-  // ...
   
   // Write static title headers in columns A-D
   sheet.mergeCells('A1:D1');
@@ -262,7 +265,7 @@ export async function exportDatabaseToExcel(
   }
 
   // Write project columns starting from Column E (Col 5)
-  projects.forEach((proj, idx) => {
+  allProjects.forEach((proj, idx) => {
     const startCol = 5 + idx * 2;
     const endCol = 6 + idx * 2;
 
@@ -272,7 +275,7 @@ export async function exportDatabaseToExcel(
     // Row 1: Merged 'Budget Code'
     sheet.mergeCells(1, startCol, 1, endCol);
     const budgetLabel = sheet.getCell(1, startCol);
-    budgetLabel.value = 'Budget Code';
+    budgetLabel.value = proj.name === 'Leave' ? 'Leave / Rotation' : 'Budget Code';
     budgetLabel.font = { bold: true };
     budgetLabel.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -285,12 +288,12 @@ export async function exportDatabaseToExcel(
 
     // Row 3: Start Date and End Date
     const startCell = sheet.getCell(3, startCol);
-    startCell.value = formatToClientDate(proj.startDate);
+    startCell.value = proj.name === 'Leave' ? 'Start' : formatToClientDate(proj.startDate);
     startCell.font = { bold: true };
     startCell.alignment = { horizontal: 'center' };
 
     const endCell = sheet.getCell(3, endCol);
-    endCell.value = formatToClientDate(proj.endDate);
+    endCell.value = proj.name === 'Leave' ? 'End' : formatToClientDate(proj.endDate);
     endCell.font = { bold: true };
     endCell.alignment = { horizontal: 'center' };
 
@@ -309,49 +312,105 @@ export async function exportDatabaseToExcel(
     return (a.name || '').localeCompare(b.name || '');
   });
 
-  // Populate Employee Rows starting at Row 5
-  sortedProfiles.forEach((emp, rIdx) => {
-    const rowIdx = 5 + rIdx;
-    const r = sheet.getRow(rowIdx);
-    r.height = 20;
+  // Populate Employee Rows starting at Row 5, line by line
+  let currentRowIdx = 5;
 
-    r.getCell(1).value = emp.department;
-    r.getCell(2).value = emp.id;
-    r.getCell(3).value = emp.name;
-    r.getCell(4).value = emp.designation;
+  sortedProfiles.forEach((emp) => {
+    const empAssignments = assignments.filter(a => a.employeeId === emp.id);
+    const empLeaves = leaves.filter(l => l.employeeId === emp.id);
 
-    projects.forEach((proj, pIdx) => {
-      const startCol = 5 + pIdx * 2;
-      const endCol = 6 + pIdx * 2;
+    if (empAssignments.length === 0 && empLeaves.length === 0) {
+      // Just write one empty row for this employee
+      const r = sheet.getRow(currentRowIdx);
+      r.height = 20;
+      r.getCell(1).value = emp.department;
+      r.getCell(2).value = emp.id;
+      r.getCell(3).value = emp.name;
+      r.getCell(4).value = emp.designation;
 
-      // Find if this employee is assigned to this project
-      const assign = assignments.find(a => a.employeeId === emp.id && a.projectName === proj.name);
-      if (assign) {
-        r.getCell(startCol).value = formatToClientDate(assign.travelStartDate || proj.startDate);
-        r.getCell(endCol).value = formatToClientDate(assign.travelEndDate || proj.endDate);
-      } else {
-        r.getCell(startCol).value = '';
-        r.getCell(endCol).value = '';
+      for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
+        const cell = r.getCell(c);
+        cell.border = {
+          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+          right: { style: 'thin', color: { argb: 'CBD5E1' } }
+        };
       }
+      currentRowIdx++;
+    } else {
+      // Write one row for each project assignment
+      empAssignments.forEach(assign => {
+        const r = sheet.getRow(currentRowIdx);
+        r.height = 20;
+        r.getCell(1).value = emp.department;
+        r.getCell(2).value = emp.id;
+        r.getCell(3).value = emp.name;
+        r.getCell(4).value = emp.designation;
 
-      r.getCell(startCol).alignment = { horizontal: 'center' };
-      r.getCell(endCol).alignment = { horizontal: 'center' };
-    });
+        allProjects.forEach((proj, pIdx) => {
+          const startCol = 5 + pIdx * 2;
+          const endCol = 6 + pIdx * 2;
 
-    // Style borders for row cells
-    for (let c = 1; c <= 4 + projects.length * 2; c++) {
-      const cell = r.getCell(c);
-      cell.border = {
-        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
-        right: { style: 'thin', color: { argb: 'CBD5E1' } }
-      };
+          if (proj.name === assign.projectName) {
+            r.getCell(startCol).value = formatToClientDate(assign.travelStartDate || proj.startDate);
+            r.getCell(endCol).value = formatToClientDate(assign.travelEndDate || proj.endDate);
+          } else {
+            r.getCell(startCol).value = '';
+            r.getCell(endCol).value = '';
+          }
+          r.getCell(startCol).alignment = { horizontal: 'center' };
+          r.getCell(endCol).alignment = { horizontal: 'center' };
+        });
+
+        for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
+          const cell = r.getCell(c);
+          cell.border = {
+            bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+            right: { style: 'thin', color: { argb: 'CBD5E1' } }
+          };
+        }
+        currentRowIdx++;
+      });
+
+      // Write one row for each leave record
+      empLeaves.forEach(lv => {
+        const r = sheet.getRow(currentRowIdx);
+        r.height = 20;
+        r.getCell(1).value = emp.department;
+        r.getCell(2).value = emp.id;
+        r.getCell(3).value = emp.name;
+        r.getCell(4).value = emp.designation;
+
+        allProjects.forEach((proj, pIdx) => {
+          const startCol = 5 + pIdx * 2;
+          const endCol = 6 + pIdx * 2;
+
+          if (proj.name === 'Leave') {
+            r.getCell(startCol).value = formatToClientDate(lv.fromDate);
+            r.getCell(endCol).value = formatToClientDate(lv.toDate);
+          } else {
+            r.getCell(startCol).value = '';
+            r.getCell(endCol).value = '';
+          }
+          r.getCell(startCol).alignment = { horizontal: 'center' };
+          r.getCell(endCol).alignment = { horizontal: 'center' };
+        });
+
+        for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
+          const cell = r.getCell(c);
+          cell.border = {
+            bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+            right: { style: 'thin', color: { argb: 'CBD5E1' } }
+          };
+        }
+        currentRowIdx++;
+      });
     }
   });
 
   // Add cell borders to all header cells (rows 1-4)
   for (let rowNum = 1; rowNum <= 4; rowNum++) {
     const headerRow = sheet.getRow(rowNum);
-    for (let c = 1; c <= 4 + projects.length * 2; c++) {
+    for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
       const cell = headerRow.getCell(c);
       cell.border = {
         bottom: { style: 'thin', color: { argb: '94A3B8' } },
@@ -664,7 +723,7 @@ export async function exportPlanningGridToExcel(
           const cell = empRow.getCell(colIdx);
           
           let cellStatus = '';
-          const globalStatus = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+          const globalStatus = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves, profiles);
           
           if (globalStatus === 'L') {
             cellStatus = 'L';
@@ -816,7 +875,7 @@ export async function exportPlanningGridToExcel(
       dates.forEach((d, dIdx) => {
         const colIdx = 4 + dIdx;
         const cell = empRow.getCell(colIdx);
-        const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+        const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves, profiles);
 
         cell.value = status;
         cell.alignment = { horizontal: 'center' };
@@ -1071,7 +1130,7 @@ export async function exportAttendanceToExcel(
     const dailyStatusVals: string[] = [];
 
     dates.forEach((d, dIdx) => {
-      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves) || '';
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles) || '';
       dailyStatusVals.push(status);
 
       if (status === 'W') { w++; statusCounts[dIdx].W++; }
@@ -1363,12 +1422,14 @@ export async function importEmployeesFromExcel(file: File): Promise<EmployeeProf
           else if (val.includes('name') || val.includes('employee name')) colIndices.name = colNum;
           else if (val.includes('dept') || val.includes('department')) colIndices.department = colNum;
           else if (val.includes('func') || val.includes('role') || val.includes('function') || val.includes('designation')) colIndices.designation = colNum;
+          else if (val.includes('status')) colIndices.status = colNum;
         });
 
         const idCol = colIndices.id || 1;
         const nameCol = colIndices.name || 2;
         const deptCol = colIndices.department || 3;
         const funcCol = colIndices.designation || 4;
+        const statusCol = colIndices.status || 5;
 
         sheet.eachRow((row, rowNumber) => {
           if (rowNumber === 1) return; // Skip header
@@ -1377,11 +1438,21 @@ export async function importEmployeesFromExcel(file: File): Promise<EmployeeProf
           const nameVal = row.getCell(nameCol).value?.toString().trim();
           if (!idVal || !nameVal) return;
 
+          let statusVal = colIndices.status ? row.getCell(statusCol).value?.toString().trim() : 'Work';
+          let parsedStatus: 'Work' | 'Standby' = 'Work';
+          if (statusVal) {
+            const clean = statusVal.toLowerCase();
+            if (clean.includes('standby') || clean === 's') {
+              parsedStatus = 'Standby';
+            }
+          }
+
           profilesList.push({
             id: idVal.toUpperCase(),
             name: nameVal,
             department: row.getCell(deptCol).value?.toString().trim() || 'Operations',
-            designation: row.getCell(funcCol).value?.toString().trim() || 'Staff'
+            designation: row.getCell(funcCol).value?.toString().trim() || 'Staff',
+            status: parsedStatus
           });
         });
 
@@ -1527,8 +1598,12 @@ export async function importFromExcel(file: File): Promise<Employee[]> {
           const travelEnd = parseDate(getVal(travelEndCol)) || projEnd;
           
           let statusVal = getVal(statusCol);
-          if (!['Working', 'Leave', 'Travelling'].includes(statusVal)) {
-            statusVal = 'Working';
+          let parsedStatus: 'Work' | 'Standby' = 'Work';
+          if (statusVal) {
+            const clean = statusVal.toLowerCase();
+            if (clean.includes('standby') || clean === 's') {
+              parsedStatus = 'Standby';
+            }
           }
 
           employees.push({
@@ -1542,7 +1617,7 @@ export async function importFromExcel(file: File): Promise<Employee[]> {
             projectEndDate: projEnd || format(new Date(), 'yyyy-MM-dd'),
             travelStartDate: travelStart,
             travelEndDate: travelEnd,
-            status: statusVal as any,
+            status: parsedStatus,
             remarks: getVal(remarkCol) || ''
           });
         });
@@ -1713,7 +1788,7 @@ export async function exportToExcel(
 
     let w = 0, l = 0, s = 0;
     dates.forEach(d => {
-      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+      let status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves, profiles);
       if (status === 'T') status = 'W';
       if (status === 'W') w++;
       else if (status === 'L') l++;
@@ -1738,7 +1813,7 @@ export async function exportToExcel(
     dates.forEach((d, dIdx) => {
       const colIdx = timelineStartCol + dIdx;
       const cell = excelRow.getCell(colIdx);
-      const status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves);
+      const status = resolveStatusOnDate(row.id, d.dateStr, assignments, projects, leaves, profiles);
 
       cell.value = status;
       cell.alignment = { horizontal: 'center' };
@@ -1813,7 +1888,7 @@ export async function exportToExcel(
     dates.forEach((d, dIdx) => {
       const colIdx = 5 + dIdx;
       const cell = row.getCell(colIdx);
-      const attStatus = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves) || '';
+      const attStatus = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles) || '';
       
       cell.value = attStatus;
       cell.alignment = { horizontal: 'center' };
@@ -1844,7 +1919,7 @@ export async function exportToExcel(
   profiles.forEach(prof => {
     let working = 0, leave = 0, travel = 0, standby = 0;
     dates.forEach(d => {
-      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves);
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles);
       if (status === 'W') working++;
       else if (status === 'L') leave++;
       else if (status === 'T') travel++;
@@ -1916,7 +1991,12 @@ export async function exportConsolidatedReportToExcel(
     masterSheet.getCell(4, c).alignment = { vertical: 'middle' };
   }
 
-  projects.forEach((proj, idx) => {
+  const allProjects = [
+    ...projects,
+    { name: 'Leave', budgetCode: 'L', startDate: '', endDate: '' }
+  ];
+
+  allProjects.forEach((proj, idx) => {
     const startCol = 5 + idx * 2;
     const endCol = 6 + idx * 2;
     masterSheet.getColumn(startCol).width = 15;
@@ -1924,7 +2004,7 @@ export async function exportConsolidatedReportToExcel(
 
     masterSheet.mergeCells(1, startCol, 1, endCol);
     const budgetLabel = masterSheet.getCell(1, startCol);
-    budgetLabel.value = 'Budget Code';
+    budgetLabel.value = proj.name === 'Leave' ? 'Leave / Rotation' : 'Budget Code';
     budgetLabel.font = { bold: true };
     budgetLabel.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -1935,12 +2015,12 @@ export async function exportConsolidatedReportToExcel(
     budgetVal.alignment = { horizontal: 'center', vertical: 'middle' };
 
     const startCell = masterSheet.getCell(3, startCol);
-    startCell.value = formatToClientDate(proj.startDate);
+    startCell.value = proj.name === 'Leave' ? 'Start' : formatToClientDate(proj.startDate);
     startCell.font = { bold: true };
     startCell.alignment = { horizontal: 'center' };
 
     const endCell = masterSheet.getCell(3, endCol);
-    endCell.value = formatToClientDate(proj.endDate);
+    endCell.value = proj.name === 'Leave' ? 'End' : formatToClientDate(proj.endDate);
     endCell.font = { bold: true };
     endCell.alignment = { horizontal: 'center' };
 
@@ -1957,45 +2037,100 @@ export async function exportConsolidatedReportToExcel(
     return (a.name || '').localeCompare(b.name || '');
   });
 
-  sortedProfiles.forEach((emp, rIdx) => {
-    const rowIdx = 5 + rIdx;
-    const r = masterSheet.getRow(rowIdx);
-    r.height = 20;
+  let currentRowIdx = 5;
 
-    r.getCell(1).value = emp.department;
-    r.getCell(2).value = emp.id;
-    r.getCell(3).value = emp.name;
-    r.getCell(4).value = emp.designation;
+  sortedProfiles.forEach((emp) => {
+    const empAssignments = assignments.filter(a => a.employeeId === emp.id);
+    const empLeaves = leaves.filter(l => l.employeeId === emp.id);
 
-    projects.forEach((proj, pIdx) => {
-      const startCol = 5 + pIdx * 2;
-      const endCol = 6 + pIdx * 2;
+    if (empAssignments.length === 0 && empLeaves.length === 0) {
+      const r = masterSheet.getRow(currentRowIdx);
+      r.height = 20;
+      r.getCell(1).value = emp.department;
+      r.getCell(2).value = emp.id;
+      r.getCell(3).value = emp.name;
+      r.getCell(4).value = emp.designation;
 
-      const assign = assignments.find(a => a.employeeId === emp.id && a.projectName === proj.name);
-      if (assign) {
-        r.getCell(startCol).value = formatToClientDate(assign.travelStartDate || proj.startDate);
-        r.getCell(endCol).value = formatToClientDate(assign.travelEndDate || proj.endDate);
-      } else {
-        r.getCell(startCol).value = '';
-        r.getCell(endCol).value = '';
+      for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
+        const cell = r.getCell(c);
+        cell.border = {
+          bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+          right: { style: 'thin', color: { argb: 'CBD5E1' } }
+        };
       }
+      currentRowIdx++;
+    } else {
+      empAssignments.forEach(assign => {
+        const r = masterSheet.getRow(currentRowIdx);
+        r.height = 20;
+        r.getCell(1).value = emp.department;
+        r.getCell(2).value = emp.id;
+        r.getCell(3).value = emp.name;
+        r.getCell(4).value = emp.designation;
 
-      r.getCell(startCol).alignment = { horizontal: 'center' };
-      r.getCell(endCol).alignment = { horizontal: 'center' };
-    });
+        allProjects.forEach((proj, pIdx) => {
+          const startCol = 5 + pIdx * 2;
+          const endCol = 6 + pIdx * 2;
 
-    for (let c = 1; c <= 4 + projects.length * 2; c++) {
-      const cell = r.getCell(c);
-      cell.border = {
-        bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
-        right: { style: 'thin', color: { argb: 'CBD5E1' } }
-      };
+          if (proj.name === assign.projectName) {
+            r.getCell(startCol).value = formatToClientDate(assign.travelStartDate || proj.startDate);
+            r.getCell(endCol).value = formatToClientDate(assign.travelEndDate || proj.endDate);
+          } else {
+            r.getCell(startCol).value = '';
+            r.getCell(endCol).value = '';
+          }
+          r.getCell(startCol).alignment = { horizontal: 'center' };
+          r.getCell(endCol).alignment = { horizontal: 'center' };
+        });
+
+        for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
+          const cell = r.getCell(c);
+          cell.border = {
+            bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+            right: { style: 'thin', color: { argb: 'CBD5E1' } }
+          };
+        }
+        currentRowIdx++;
+      });
+
+      empLeaves.forEach(lv => {
+        const r = masterSheet.getRow(currentRowIdx);
+        r.height = 20;
+        r.getCell(1).value = emp.department;
+        r.getCell(2).value = emp.id;
+        r.getCell(3).value = emp.name;
+        r.getCell(4).value = emp.designation;
+
+        allProjects.forEach((proj, pIdx) => {
+          const startCol = 5 + pIdx * 2;
+          const endCol = 6 + pIdx * 2;
+
+          if (proj.name === 'Leave') {
+            r.getCell(startCol).value = formatToClientDate(lv.fromDate);
+            r.getCell(endCol).value = formatToClientDate(lv.toDate);
+          } else {
+            r.getCell(startCol).value = '';
+            r.getCell(endCol).value = '';
+          }
+          r.getCell(startCol).alignment = { horizontal: 'center' };
+          r.getCell(endCol).alignment = { horizontal: 'center' };
+        });
+
+        for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
+          const cell = r.getCell(c);
+          cell.border = {
+            bottom: { style: 'thin', color: { argb: 'CBD5E1' } },
+            right: { style: 'thin', color: { argb: 'CBD5E1' } }
+          };
+        }
+        currentRowIdx++;
+      });
     }
   });
 
   for (let rowNum = 1; rowNum <= 4; rowNum++) {
     const headerRow = masterSheet.getRow(rowNum);
-    for (let c = 1; c <= 4 + projects.length * 2; c++) {
+    for (let c = 1; c <= 4 + allProjects.length * 2; c++) {
       const cell = headerRow.getCell(c);
       cell.border = {
         bottom: { style: 'thin', color: { argb: '94A3B8' } },
@@ -2003,6 +2138,7 @@ export async function exportConsolidatedReportToExcel(
       };
     }
   }
+
   masterSheet.views = [{ state: 'frozen', xSplit: 4, ySplit: 4 }];
 
   // ==================== TAB 2: Planning Grid ====================
@@ -2194,7 +2330,7 @@ export async function exportConsolidatedReportToExcel(
         dates.forEach((d, dIdx) => {
           const colIdx = 5 + dIdx;
           const cell = empRow.getCell(colIdx);
-          let status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+          let status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves, profiles);
 
           cell.value = status;
           cell.alignment = { horizontal: 'center' };
@@ -2306,7 +2442,7 @@ export async function exportConsolidatedReportToExcel(
       dates.forEach((d, dIdx) => {
         const colIdx = 5 + dIdx;
         const cell = empRow.getCell(colIdx);
-        const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves);
+        const status = resolveStatusOnDate(emp.id, d.dateStr, assignments, projects, leaves, profiles);
 
         cell.value = status;
         cell.alignment = { horizontal: 'center' };
@@ -2509,7 +2645,7 @@ export async function exportConsolidatedReportToExcel(
     const dailyStatusVals: string[] = [];
 
     dates.forEach((d, dIdx) => {
-      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves) || '';
+      const status = resolveStatusOnDate(prof.id, d.dateStr, assignments, projects, leaves, profiles) || '';
       dailyStatusVals.push(status);
       if (status === 'W') { w++; attStatusCounts[dIdx].W++; }
       else if (status === 'L') { l++; attStatusCounts[dIdx].L++; }
@@ -2719,5 +2855,77 @@ export async function exportAuditLogToExcel(logs: any[]) {
   a.href = url;
   a.download = `HR_Staff_Planner_Audit_Logs_${new Date().toISOString().split('T')[0]}.xlsx`;
   a.click();
+  window.URL.revokeObjectURL(url);
+}
+
+export async function exportNewJoineeReviewsToExcel(reviews: ReviewRecord[]) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('New Joinee Reviews');
+
+  sheet.columns = [
+    { header: 'Employee ID', key: 'employeeId', width: 15 },
+    { header: 'Employee Name', key: 'employeeName', width: 25 },
+    { header: 'Department', key: 'department', width: 20 },
+    { header: 'Designation', key: 'designation', width: 20 },
+    { header: 'Joining Date', key: 'joiningDate', width: 15 },
+    { header: 'Review Type', key: 'reviewType', width: 15 },
+    { header: 'Due Date', key: 'dueDate', width: 15 },
+    { header: 'Reviewer', key: 'reviewer', width: 20 },
+    { header: 'Status', key: 'status', width: 15 },
+    { header: 'Completion Date', key: 'completionDate', width: 18 },
+    { header: 'Notes (MOM)', key: 'notes', width: 40 },
+    { header: 'Feedback', key: 'feedback', width: 40 },
+    { header: 'Action Items', key: 'actionItems', width: 40 },
+    { header: 'Attachment', key: 'attachmentName', width: 25 }
+  ];
+
+  sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+  sheet.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: '4F46E5' } // Indigo
+  };
+  sheet.getRow(1).height = 25;
+  sheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'left' };
+
+  reviews.forEach(r => {
+    sheet.addRow({
+      employeeId: r.employeeId,
+      employeeName: r.employeeName,
+      department: r.department,
+      designation: r.designation,
+      joiningDate: formatToClientDate(r.joiningDate),
+      reviewType: r.reviewType,
+      dueDate: formatToClientDate(r.dueDate),
+      reviewer: r.reviewer || '-',
+      status: r.status,
+      completionDate: r.completionDate ? formatToClientDate(r.completionDate) : '-',
+      notes: r.notes || '-',
+      feedback: r.feedback || '-',
+      actionItems: r.actionItems || '-',
+      attachmentName: r.attachmentName || '-'
+    });
+  });
+
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    row.height = 20;
+    for (let i = 1; i <= 14; i++) {
+      const cell = row.getCell(i);
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: 'E2E8F0' } },
+        right: { style: 'thin', color: { argb: 'E2E8F0' } }
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'left' };
+    }
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `New_Joinee_Reviews_${new Date().toISOString().split('T')[0]}.xlsx`;
+  link.click();
   window.URL.revokeObjectURL(url);
 }
