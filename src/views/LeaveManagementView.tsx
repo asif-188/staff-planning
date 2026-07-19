@@ -36,21 +36,8 @@ export default function LeaveManagementView({
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
-  const [startDateStr, setStartDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    return `${yr}-${mo}-01`;
-  });
-  const [endDateStr, setEndDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const nextMonthDate = new Date(yr, d.getMonth() + 2, 0);
-    const nextYr = nextMonthDate.getFullYear();
-    const nextMo = String(nextMonthDate.getMonth() + 1).padStart(2, '0');
-    const nextLastDay = String(nextMonthDate.getDate()).padStart(2, '0');
-    return `${nextYr}-${nextMo}-${nextLastDay}`;
-  });
+  const [startDateStr, setStartDateStr] = useState('');
+  const [endDateStr, setEndDateStr] = useState('');
 
   // Modals & Forms
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -116,7 +103,7 @@ export default function LeaveManagementView({
     // Check overlap with the date range filter
     const lFrom = l.fromDate;
     const lTo = l.toDate;
-    const isOverlap = !(lTo < startDateStr || lFrom > endDateStr);
+    const isOverlap = (!startDateStr || lTo >= startDateStr) && (!endDateStr || lFrom <= endDateStr);
     if (!isOverlap) return false;
 
     // Search filter
@@ -342,6 +329,20 @@ export default function LeaveManagementView({
               />
             </div>
           </div>
+
+          {(startDateStr || endDateStr) && (
+            <button
+              type="button"
+              onClick={() => {
+                setStartDateStr('');
+                setEndDateStr('');
+              }}
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-slate-300 dark:border-slate-700"
+              title="Clear date range filters"
+            >
+              Clear Date
+            </button>
+          )}
 
           <button
             onClick={() => exportLeaveReportToExcel(filteredLeaves, profiles, projects, startDateStr, endDateStr)}

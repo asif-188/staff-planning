@@ -228,6 +228,7 @@ export function usePlanningState() {
         }
         list.push(item);
       });
+      list.sort((a, b) => (b.deletedAt || '').localeCompare(a.deletedAt || ''));
       setRecycleBin(list);
     });
 

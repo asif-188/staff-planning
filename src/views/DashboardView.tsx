@@ -1,4 +1,4 @@
-import type { EmployeeProfile, ProjectAssignment, ProjectDetails, LeaveRecord } from '../hooks/usePlanningState';
+import type { EmployeeProfile, ProjectAssignment, ProjectDetails, LeaveRecord, ReviewRecord } from '../hooks/usePlanningState';
 import { useState, useEffect } from 'react';
 import { 
   Users, 
@@ -11,7 +11,7 @@ import {
   Eye
 } from 'lucide-react';
 import { format, eachDayOfInterval } from 'date-fns';
-import { resolveStatusOnDate, formatToClientDate, safeParseDate, normalizeDateString } from '../utils/timelineHelper';
+import { resolveStatusOnDate, formatToClientDate, safeParseDate, normalizeDateString, getExtremeDates } from '../utils/timelineHelper';
 import { exportDashboardToExcel } from '../utils/excelHelper';
 import { getQuoteOfTheDay } from '../utils/quotes';
 
@@ -20,8 +20,9 @@ interface DashboardViewProps {
   assignments: ProjectAssignment[];
   projects: ProjectDetails[];
   leaves: LeaveRecord[];
+  reviews: ReviewRecord[];
   onNavigate: (
-    tab: 'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'settings',
+    tab: 'dashboard' | 'master-sheet' | 'planning' | 'leave-management' | 'attendance' | 'availability-finder' | 'settings' | 'new-joinee-review',
     subTab?: 'assignments' | 'employees' | 'projects' | 'recycle-bin',
     filters?: {
       search?: string;
@@ -38,6 +39,7 @@ export default function DashboardView({
   assignments, 
   projects, 
   leaves,
+  reviews = [],
   onNavigate
 }: DashboardViewProps) {
   const [systemTime, setSystemTime] = useState(() => new Date());
@@ -58,19 +60,8 @@ export default function DashboardView({
     });
   };
 
-  const [startDateStr, setStartDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    return `${yr}-${mo}-01`;
-  });
-  const [endDateStr, setEndDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    const lastDay = new Date(yr, d.getMonth() + 1, 0).getDate();
-    return `${yr}-${mo}-${String(lastDay).padStart(2, '0')}`;
-  });
+  const [startDateStr, setStartDateStr] = useState('');
+  const [endDateStr, setEndDateStr] = useState('');
   const [selectedStatusDetails, setSelectedStatusDetails] = useState<'W' | 'L' | 'T' | 'S' | null>(null);
   const [insightModal, setInsightModal] = useState<{ title: string; items: string[] } | null>(null);
 
@@ -139,8 +130,12 @@ export default function DashboardView({
   }).length;
 
   // 2. Resolve lists based on Custom Date Range Period
-  const start = safeParseDate(startDateStr);
-  const end = safeParseDate(endDateStr);
+  const { min: defaultStart, max: defaultEnd } = getExtremeDates(projects, assignments, leaves);
+  const effectiveStart = startDateStr || defaultStart;
+  const effectiveEnd = endDateStr || defaultEnd;
+
+  const start = safeParseDate(effectiveStart);
+  const end = safeParseDate(effectiveEnd);
 
   const getRangeDetails = () => {
     if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
@@ -192,7 +187,7 @@ export default function DashboardView({
 
       // Check overlap with custom period
       const rangeLeaves = empLeaves.filter(l => {
-        return !(l.toDate < startDateStr || l.fromDate > endDateStr);
+        return !(l.toDate < effectiveStart || l.fromDate > effectiveEnd);
       });
 
       if (rangeLeaves.length > 0) {
@@ -280,10 +275,10 @@ export default function DashboardView({
   const { onLeave, standbyList } = getRangeDetails();
 
   const handleExportDashboard = () => {
-    exportDashboardToExcel(onLeave, standbyList, [], startDateStr, endDateStr);
+    exportDashboardToExcel(onLeave, standbyList, [], effectiveStart, effectiveEnd);
   };
 
-  const handleShowInsightDetail = (type: 'available' | 'ending' | 'leaves' | 'conflicts' | 'working' | 'validation') => {
+  const handleShowInsightDetail = (type: 'available' | 'ending' | 'leaves' | 'conflicts' | 'working' | 'validation' | 'reviews') => {
     // Resolve localToday
     const d = new Date();
     const yr = d.getFullYear();
@@ -409,6 +404,16 @@ export default function DashboardView({
             'Missing employee departments check: 0 issues',
             'All allocations correctly associated with valid profiles.'
           ]
+        });
+        break;
+      }
+      case 'reviews': {
+        const list = reviews
+          .filter(r => r.status !== 'Completed')
+          .map(r => `${r.employeeName} (${r.employeeId}) — Status: ${r.status} (Due: ${formatToClientDate(r.dueDate)})`);
+        setInsightModal({
+          title: 'Pending New Employee Reviews',
+          items: list.length > 0 ? list : ['No new employee reviews are currently pending.']
         });
         break;
       }
@@ -633,10 +638,14 @@ export default function DashboardView({
                   <li className="flex items-center justify-between gap-2 pb-0.5">
                     <div className="flex items-center gap-2">
                       <span className="text-sm">•</span>
-                      <span>All employee records validated.</span>
+                      <span>
+                        {reviews.filter(r => r.status !== 'Completed').length > 0
+                          ? `${reviews.filter(r => r.status !== 'Completed').length} New employee reviews pending.`
+                          : 'All new employee reviews completed.'}
+                      </span>
                     </div>
                     <button 
-                      onClick={() => handleShowInsightDetail('validation')}
+                      onClick={() => handleShowInsightDetail('reviews')}
                       className="p-1 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 dark:text-indigo-450 dark:hover:text-indigo-350 dark:hover:bg-indigo-950/20 rounded-lg transition-all cursor-pointer"
                       title="Verify Details"
                     >
@@ -786,6 +795,20 @@ export default function DashboardView({
                 />
               </div>
             </div>
+
+            {(startDateStr || endDateStr) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStartDateStr('');
+                  setEndDateStr('');
+                }}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-slate-300 dark:border-slate-700 h-[38px] self-center animate-fade-in"
+                title="Clear date range filters"
+              >
+                Clear Date
+              </button>
+            )}
 
             <button
               onClick={handleExportDashboard}

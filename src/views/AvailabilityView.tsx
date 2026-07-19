@@ -15,22 +15,8 @@ interface AvailabilityViewProps {
 
 export default function AvailabilityView({ profiles, assignments, projects, attendance, leaves }: AvailabilityViewProps) {
   // Query Form State
-  const [startDateStr, setStartDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    const dt = String(d.getDate()).padStart(2, '0');
-    return `${yr}-${mo}-${dt}`;
-  });
-  const [endDateStr, setEndDateStr] = useState(() => {
-    const d = new Date();
-    const end = new Date(d);
-    end.setDate(d.getDate() + 14); // 15-day range
-    const endYr = end.getFullYear();
-    const endMo = String(end.getMonth() + 1).padStart(2, '0');
-    const endDt = String(end.getDate()).padStart(2, '0');
-    return `${endYr}-${endMo}-${endDt}`;
-  });
+  const [startDateStr, setStartDateStr] = useState('');
+  const [endDateStr, setEndDateStr] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [funcFilter, setFuncFilter] = useState('');
   
@@ -60,10 +46,11 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
   const getAvailableStaff = () => {
     if (!hasSearched) return [];
 
-    const searchStart = safeParseDate(startDateStr);
-    const searchEnd = safeParseDate(endDateStr);
+    const isRangeQueried = startDateStr && endDateStr;
+    const searchStart = isRangeQueried ? safeParseDate(startDateStr) : null;
+    const searchEnd = isRangeQueried ? safeParseDate(endDateStr) : null;
     
-    if (isNaN(searchStart.getTime()) || isNaN(searchEnd.getTime()) || searchStart > searchEnd) {
+    if (isRangeQueried && (isNaN(searchStart!.getTime()) || isNaN(searchEnd!.getTime()) || searchStart! > searchEnd!)) {
       return [];
     }
 
@@ -87,7 +74,82 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
       if (deptFilter && prof.department !== deptFilter) return;
       if (funcFilter && prof.designation !== funcFilter) return;
 
-      const days = eachDayOfInterval({ start: searchStart, end: searchEnd });
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+      const todayStatus = resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves, profiles) || 'S';
+      
+      let todayStatusLabel = 'Standby';
+      if (todayStatus === 'W') {
+        const activeAssToday = empAssignments.find(a => {
+          const proj = projects.find(p => p.name === a.projectName);
+          const start = a.travelStartDate || proj?.startDate || '';
+          const end = a.travelEndDate || proj?.endDate || '';
+          return todayStr >= start && todayStr <= end;
+        });
+        todayStatusLabel = activeAssToday ? `Working (${activeAssToday.projectName})` : 'Working';
+      } else if (todayStatus === 'T') {
+        const activeAssToday = empAssignments.find(a => {
+          const proj = projects.find(p => p.name === a.projectName);
+          const start = a.travelStartDate || proj?.startDate || '';
+          const end = a.travelEndDate || proj?.endDate || '';
+          return todayStr >= start && todayStr <= end;
+        });
+        todayStatusLabel = activeAssToday ? `Travelling (${activeAssToday.projectName})` : 'Travelling';
+      } else if (todayStatus === 'L') {
+        todayStatusLabel = 'On Leave';
+      }
+
+      if (!isRangeQueried) {
+        // No date range requested: show all assignments and leaves for the employee
+        const workingList: string[] = [];
+        empAssignments.forEach(assign => {
+          if (!assign.projectName) return;
+          const proj = projects.find(p => p.name === assign.projectName);
+          const start = assign.travelStartDate || proj?.startDate || '';
+          const end = assign.travelEndDate || proj?.endDate || '';
+          workingList.push(`${assign.projectName} (ID: ${proj?.budgetCode || 'N/A'}) [${formatToClientDate(start)} to ${formatToClientDate(end)}]`);
+        });
+        const workingDetailsVal = workingList.join('; ') || 'None';
+
+        const leaveList: string[] = [];
+        leaves.forEach(l => {
+          if (l.employeeId !== prof.id) return;
+          const proj = projects.find(p => p.name === l.projectId);
+          const projPart = l.projectId && l.projectId !== 'None' ? ` for ${l.projectId} (ID: ${proj?.budgetCode || 'N/A'})` : '';
+          leaveList.push(`On Leave${projPart} [${formatToClientDate(l.fromDate)} to ${formatToClientDate(l.toDate)}]`);
+        });
+        const leaveDetailsVal = leaveList.join('; ') || 'None';
+
+        const empObj: Employee = {
+          id: prof.id,
+          name: prof.name,
+          department: prof.department,
+          designation: prof.designation,
+          project: empAssignments.map(a => a.projectName).filter(Boolean).join(', ') || 'Unassigned',
+          budgetCode: '',
+          projectStartDate: '',
+          projectEndDate: '',
+          travelStartDate: '',
+          travelEndDate: '',
+          status: empAssignments[0]?.status || 'Working',
+          remarks: ''
+        };
+
+        availableStaffList.push({
+          employee: empObj,
+          freeRange: { startStr: '-', endStr: '-', daysCount: 0 },
+          totalFreeDays: 0,
+          occupiedDetails: `Today: ${todayStatusLabel}`,
+          workingDetails: workingDetailsVal,
+          leaveDetails: leaveDetailsVal,
+          todayStatus,
+          todayStatusLabel,
+          periodOccupancies: []
+        });
+        return;
+      }
+
+      // Range is queried: run day-by-day search range logic
+      const days = eachDayOfInterval({ start: searchStart!, end: searchEnd! });
       const freeDays: Date[] = [];
       const occupiedProjects = new Set<string>();
 
@@ -155,30 +217,6 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
             endStr: format(currentEnd, 'dd-MM-yyyy'),
             daysCount: count
           });
-        }
-
-        const todayStr = format(new Date(), 'yyyy-MM-dd');
-        const todayStatus = resolveStatusOnDate(prof.id, todayStr, assignments, projects, leaves, profiles) || 'S';
-        
-        let todayStatusLabel = 'Standby';
-        if (todayStatus === 'W') {
-          const activeAssToday = empAssignments.find(a => {
-            const proj = projects.find(p => p.name === a.projectName);
-            const start = a.travelStartDate || proj?.startDate || '';
-            const end = a.travelEndDate || proj?.endDate || '';
-            return todayStr >= start && todayStr <= end;
-          });
-          todayStatusLabel = activeAssToday ? `Working (${activeAssToday.projectName})` : 'Working';
-        } else if (todayStatus === 'T') {
-          const activeAssToday = empAssignments.find(a => {
-            const proj = projects.find(p => p.name === a.projectName);
-            const start = a.travelStartDate || proj?.startDate || '';
-            const end = a.travelEndDate || proj?.endDate || '';
-            return todayStr >= start && todayStr <= end;
-          });
-          todayStatusLabel = activeAssToday ? `Travelling (${activeAssToday.projectName})` : 'Travelling';
-        } else if (todayStatus === 'L') {
-          todayStatusLabel = 'On Leave';
         }
 
         const periodOccupancies: string[] = [];
@@ -340,7 +378,6 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
             <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Start Date</label>
             <input
               type="date"
-              required
               value={startDateStr}
               onChange={e => setStartDateStr(e.target.value)}
               className="w-full px-3 py-2 bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-sm focus:outline-none transition-colors"
@@ -351,7 +388,6 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
             <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">End Date</label>
             <input
               type="date"
-              required
               value={endDateStr}
               onChange={e => setEndDateStr(e.target.value)}
               className="w-full px-3 py-2 bg-slate-100 dark:bg-slate-900 border border-transparent focus:border-brand-500 rounded-xl text-sm focus:outline-none transition-colors"
@@ -382,13 +418,28 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
             </select>
           </div>
 
-          <button
-            type="submit"
-            className="flex items-center justify-center gap-2 w-full py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold shadow-md transition-all duration-200 cursor-pointer"
-          >
-            <Search className="w-4 h-4" />
-            Find Staff
-          </button>
+          <div className="flex gap-2 w-full">
+            <button
+              type="submit"
+              className="flex items-center justify-center gap-2 flex-1 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold shadow-md transition-all duration-200 cursor-pointer text-sm"
+            >
+              <Search className="w-4 h-4" />
+              Find Staff
+            </button>
+            {(startDateStr || endDateStr) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStartDateStr('');
+                  setEndDateStr('');
+                }}
+                className="flex items-center justify-center px-3 py-2 bg-slate-150 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold transition-all duration-200 cursor-pointer border border-slate-300 dark:border-slate-700 text-xs"
+                title="Clear dates"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </form>
       </div>
 
@@ -398,7 +449,7 @@ export default function AvailabilityView({ profiles, assignments, projects, atte
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
               <h3 className="text-lg font-bold text-slate-800 dark:text-white">Matching Standby Staff ({filteredResults.length})</h3>
-              <p className="text-xs text-slate-500">Query window: {startDateStr} to {endDateStr}</p>
+              <p className="text-xs text-slate-500">Query window: {startDateStr && endDateStr ? `${startDateStr} to ${endDateStr}` : 'All Time'}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <input

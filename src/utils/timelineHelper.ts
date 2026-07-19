@@ -188,3 +188,45 @@ export function getCellStatus(
   }];
   return resolveStatusOnDate(employee.id, dateStr, assignments, projects, leaves, profiles);
 }
+
+export function getExtremeDates(
+  projects: ProjectDetails[],
+  assignments: ProjectAssignment[],
+  leaves: LeaveRecord[]
+): { min: string; max: string } {
+  let minDate = '';
+  let maxDate = '';
+
+  const updateMinMax = (d: string) => {
+    if (!d) return;
+    const normalized = normalizeDateString(d);
+    if (!minDate || normalized < minDate) minDate = normalized;
+    if (!maxDate || normalized > maxDate) maxDate = normalized;
+  };
+
+  (projects || []).forEach(p => {
+    updateMinMax(p.startDate);
+    updateMinMax(p.endDate);
+  });
+  (assignments || []).forEach(a => {
+    updateMinMax(a.travelStartDate);
+    updateMinMax(a.travelEndDate);
+  });
+  (leaves || []).forEach(l => {
+    updateMinMax(l.fromDate);
+    updateMinMax(l.toDate);
+  });
+
+  if (!minDate || !maxDate) {
+    const today = new Date();
+    const yr = today.getFullYear();
+    const mo = String(today.getMonth() + 1).padStart(2, '0');
+    const lastDay = new Date(yr, today.getMonth() + 1, 0).getDate();
+    return {
+      min: `${yr}-${mo}-01`,
+      max: `${yr}-${mo}-${String(lastDay).padStart(2, '0')}`
+    };
+  }
+
+  return { min: minDate, max: maxDate };
+}

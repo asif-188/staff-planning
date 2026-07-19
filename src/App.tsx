@@ -176,6 +176,7 @@ export default function App() {
             assignments={state.assignments}
             projects={state.projects}
             leaves={state.leaves}
+            reviews={state.reviews}
             onNavigate={handleNavigate}
           />
         );

@@ -1,5 +1,5 @@
 import type { EmployeeProfile, ProjectAssignment, ProjectDetails, LeaveRecord } from '../hooks/usePlanningState';
-import { getDatesForMonth, getDatesForInterval, resolveStatusOnDate } from '../utils/timelineHelper';
+import { getDatesForMonth, getDatesForInterval, resolveStatusOnDate, getExtremeDates } from '../utils/timelineHelper';
 import { format } from 'date-fns';
 import { 
   CalendarDays, 
@@ -30,19 +30,8 @@ export default function AttendanceView({
 }: AttendanceViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'table' | 'calendar'>('table');
   
-  const [customStart, setCustomStart] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    return `${yr}-${mo}-01`;
-  });
-  const [customEnd, setCustomEnd] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    const lastDay = new Date(yr, d.getMonth() + 1, 0).getDate();
-    return `${yr}-${mo}-${String(lastDay).padStart(2, '0')}`;
-  });
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
 
   // Month selector for Calendar View (needs to draw offsets)
   const [currentMonthStr, setCurrentMonthStr] = useState(() => {
@@ -55,8 +44,12 @@ export default function AttendanceView({
   const [sortField, setSortField] = useState<string>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   
+  const { min: defaultStart, max: defaultEnd } = getExtremeDates(projects, assignments, leaves);
+  const effectiveStart = customStart || defaultStart;
+  const effectiveEnd = customEnd || defaultEnd;
+
   const dates = activeSubTab === 'table' 
-    ? getDatesForInterval(customStart, customEnd)
+    ? getDatesForInterval(effectiveStart, effectiveEnd)
     : getDatesForMonth(currentMonthStr);
     
   const todayStr = format(new Date(), 'yyyy-MM-dd');
@@ -238,11 +231,25 @@ export default function AttendanceView({
                 </div>
               </div>
 
+              {(customStart || customEnd) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomStart('');
+                    setCustomEnd('');
+                  }}
+                  className="px-2.5 py-1.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-slate-200 dark:border-slate-800 h-[34px] self-center"
+                  title="Clear date range filters"
+                >
+                  Clear Date
+                </button>
+              )}
+
               <div className="flex flex-col items-end">
                 <button
                   type="button"
                   disabled={hasValidationErrors}
-                  onClick={() => exportAttendanceToExcel(assignments, profiles, projects, leaves, customStart, customEnd)}
+                  onClick={() => exportAttendanceToExcel(assignments, profiles, projects, leaves, effectiveStart, effectiveEnd)}
                   className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-xl shadow-sm transition-colors ${
                     hasValidationErrors
                       ? 'bg-red-50/20 text-red-400 border border-red-200 dark:border-red-950/30 cursor-not-allowed opacity-60'

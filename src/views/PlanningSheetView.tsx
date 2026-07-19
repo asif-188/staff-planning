@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { EmployeeProfile, ProjectAssignment, ProjectDetails, LeaveRecord } from '../hooks/usePlanningState';
-import { getDatesForInterval, resolveStatusOnDate, formatToClientDate } from '../utils/timelineHelper';
+import { getDatesForInterval, resolveStatusOnDate, formatToClientDate, getExtremeDates } from '../utils/timelineHelper';
 import { format } from 'date-fns';
 import { Download } from 'lucide-react';
 import { exportPlanningGridToExcel } from '../utils/excelHelper';
@@ -14,9 +14,8 @@ interface PlanningSheetViewProps {
 }
 
 export default function PlanningSheetView({ profiles, assignments, projects, leaves, hasValidationErrors }: PlanningSheetViewProps) {
-  // Use May 1 to June 30, 2026 as default custom interval
-  const [customStart, setCustomStart] = useState('2026-05-01');
-  const [customEnd, setCustomEnd] = useState('2026-06-30');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<string>('name');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
@@ -28,7 +27,10 @@ export default function PlanningSheetView({ profiles, assignments, projects, lea
   const [showProjStart, setShowProjStart] = useState(true);
   const [showProjEnd, setShowProjEnd] = useState(true);
   
-  const dates = getDatesForInterval(customStart, customEnd);
+  const { min: defaultStart, max: defaultEnd } = getExtremeDates(projects, assignments, leaves);
+  const effectiveStart = customStart || defaultStart;
+  const effectiveEnd = customEnd || defaultEnd;
+  const dates = getDatesForInterval(effectiveStart, effectiveEnd);
   const infoColsCount = 1 + (showDepartment ? 1 : 0) + (showDesignation ? 1 : 0) + (showProject ? 1 : 0) + (showProjStart ? 1 : 0) + (showProjEnd ? 1 : 0);
   
   const handleSort = (field: string) => {
@@ -189,10 +191,24 @@ export default function PlanningSheetView({ profiles, assignments, projects, lea
               </div>
             </div>
 
+            {(customStart || customEnd) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomStart('');
+                  setCustomEnd('');
+                }}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-slate-300 dark:border-slate-700 h-[38px] self-center animate-fade-in"
+                title="Clear date range filters"
+              >
+                Clear Date
+              </button>
+            )}
+
             <div className="flex flex-col items-end">
               <button
                 disabled={hasValidationErrors}
-                onClick={() => exportPlanningGridToExcel(assignments, profiles, projects, leaves, customStart, customEnd)}
+                onClick={() => exportPlanningGridToExcel(assignments, profiles, projects, leaves, effectiveStart, effectiveEnd)}
                 className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border rounded-2xl shadow-sm transition-colors ${
                   hasValidationErrors
                     ? 'border-red-200 dark:border-red-950/30 bg-red-50/20 dark:bg-red-950/10 text-red-450 cursor-not-allowed opacity-60'

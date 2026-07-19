@@ -105,21 +105,8 @@ export default function MasterSheetView({
   // Validation UI panel state
   const [showValidationPanel, setShowValidationPanel] = useState(false);
 
-  const [startDateStr, setStartDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    return `${yr}-${mo}-01`;
-  });
-  const [endDateStr, setEndDateStr] = useState(() => {
-    const d = new Date();
-    const yr = d.getFullYear();
-    const nextMonthDate = new Date(yr, d.getMonth() + 2, 0);
-    const nextYr = nextMonthDate.getFullYear();
-    const nextMo = String(nextMonthDate.getMonth() + 1).padStart(2, '0');
-    const nextLastDay = String(nextMonthDate.getDate()).padStart(2, '0');
-    return `${nextYr}-${nextMo}-${nextLastDay}`;
-  });
+  const [startDateStr, setStartDateStr] = useState('');
+  const [endDateStr, setEndDateStr] = useState('');
 
   // Export modal range states
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -588,7 +575,7 @@ export default function MasterSheetView({
       const end = data.travelEndDate || targetProj?.endDate;
       let matchesDateRange = true;
       if (start && end) {
-        matchesDateRange = !(end < startDateStr || start > endDateStr);
+        matchesDateRange = (!startDateStr || end >= startDateStr) && (!endDateStr || start <= endDateStr);
       }
 
       return matchesSearch && matchesDept && matchesProject && matchesStatus && matchesToday && matchesDateRange;
@@ -943,21 +930,36 @@ export default function MasterSheetView({
 
           {/* Date Range Selector */}
           {activeSubTab === 'assignments' && (
-            <div className="flex items-center gap-2.5 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-xl border border-transparent text-xs font-semibold">
-              <span className="text-slate-400 uppercase text-[9px] tracking-wider font-bold">Range:</span>
-              <input
-                type="date"
-                value={startDateStr}
-                onChange={e => setStartDateStr(e.target.value)}
-                className="bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-350 cursor-pointer w-24 text-[11px]"
-              />
-              <span className="text-slate-400 font-bold">to</span>
-              <input
-                type="date"
-                value={endDateStr}
-                onChange={e => setEndDateStr(e.target.value)}
-                className="bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-350 cursor-pointer w-24 text-[11px]"
-              />
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2.5 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-xl border border-transparent text-xs font-semibold">
+                <span className="text-slate-400 uppercase text-[9px] tracking-wider font-bold">Range:</span>
+                <input
+                  type="date"
+                  value={startDateStr}
+                  onChange={e => setStartDateStr(e.target.value)}
+                  className="bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-350 cursor-pointer w-24 text-[11px]"
+                />
+                <span className="text-slate-400 font-bold">to</span>
+                <input
+                  type="date"
+                  value={endDateStr}
+                  onChange={e => setEndDateStr(e.target.value)}
+                  className="bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-350 cursor-pointer w-24 text-[11px]"
+                />
+              </div>
+              {(startDateStr || endDateStr) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStartDateStr('');
+                    setEndDateStr('');
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-slate-300 dark:border-slate-700"
+                  title="Clear date range filters"
+                >
+                  Clear Date
+                </button>
+              )}
             </div>
           )}
         </div>

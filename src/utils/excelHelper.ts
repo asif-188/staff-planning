@@ -47,7 +47,8 @@ export async function exportAvailabilityReportToExcel(
   // Title block
   sheet.mergeCells('A1:H1');
   const titleCell = sheet.getCell('A1');
-  titleCell.value = `Availability Finder Report (Period: ${startDate} to ${endDate})`;
+  const periodText = (startDate && endDate) ? `${startDate} to ${endDate}` : 'All Time';
+  titleCell.value = `Availability Finder Report (Period: ${periodText})`;
   titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
   titleCell.fill = {
     type: 'pattern',
@@ -119,7 +120,7 @@ export async function exportAvailabilityReportToExcel(
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Availability_Report_${startDate}_to_${endDate}.xlsx`;
+  a.download = (startDate && endDate) ? `Availability_Report_${startDate}_to_${endDate}.xlsx` : 'Availability_Report_All_Time.xlsx';
   a.click();
   window.URL.revokeObjectURL(url);
 }
@@ -137,7 +138,10 @@ export async function exportLeaveReportToExcel(
   // Title Block
   sheet.mergeCells('A1:I1');
   const titleCell = sheet.getCell('A1');
-  titleCell.value = `Leave Management Report (Period: ${formatToClientDate(startDate)} to ${formatToClientDate(endDate)})`;
+  const periodText = (startDate && endDate) 
+    ? `${formatToClientDate(startDate)} to ${formatToClientDate(endDate)}`
+    : 'All Time';
+  titleCell.value = `Leave Management Report (Period: ${periodText})`;
   titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFF' } };
   titleCell.fill = {
     type: 'pattern',
@@ -183,14 +187,14 @@ export async function exportLeaveReportToExcel(
   sheet.getColumn(9).width = 30;
 
   // Filter leaves that overlap with the selected range
-  const rangeStart = normalizeDateString(startDate);
-  const rangeEnd = normalizeDateString(endDate);
+  const rangeStart = startDate ? normalizeDateString(startDate) : '';
+  const rangeEnd = endDate ? normalizeDateString(endDate) : '';
 
   const activeLeaves = leaves.filter(l => {
     const lFrom = normalizeDateString(l.fromDate);
     const lTo = normalizeDateString(l.toDate);
     if (!lFrom || !lTo) return false;
-    return !(lTo < rangeStart || lFrom > rangeEnd);
+    return (!rangeStart || lTo >= rangeStart) && (!rangeEnd || lFrom <= rangeEnd);
   });
 
   activeLeaves.forEach(l => {
@@ -215,7 +219,7 @@ export async function exportLeaveReportToExcel(
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Leave_Report_${startDate}_to_${endDate}.xlsx`;
+  a.download = (startDate && endDate) ? `Leave_Report_${startDate}_to_${endDate}.xlsx` : 'Leave_Report_All_Time.xlsx';
   a.click();
   window.URL.revokeObjectURL(url);
 }
